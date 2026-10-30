@@ -1,3 +1,3 @@
-# CanBus
+# CAN-Bus
 
 To be continued (ordered hardware CAN transceivers)...

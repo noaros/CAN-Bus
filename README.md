@@ -25,3 +25,22 @@ Bus connections between the two transceivers:
 
 - Wire TX to CTX and RX to CRX straight through (not crossed).
 - Each Waveshare board has a 120 Ω termination resistor, so the bus is terminated at both ends. With power off, CANH to CANL should measure about 60 Ω.
+
+### Bit Timing (500 kbps)
+
+Bit rate = clock ÷ (prescaler × (1 + Seg1 + Seg2)). Sample point = (1 + Seg1) ÷ (1 + Seg1 + Seg2).
+
+| Setting | NUCLEO-F429ZI (bxCAN) | NUCLEO-H723ZG (FDCAN) |
+|---|---|---|
+| CAN clock | APB1 = 45 MHz (180 MHz system clock) | FDCAN kernel clock = 80 MHz |
+| Prescaler | 6 | 10 |
+| Seg1 | 12 tq (BS1) | 13 tq (NominalTimeSeg1) |
+| Seg2 | 2 tq (BS2) | 2 tq (NominalTimeSeg2) |
+| SJW | 1 tq | 1 tq |
+| Time quanta per bit | 15 | 16 |
+| Sample point | 86.7% | 87.5% |
+
+FDCAN notes for the H723ZG:
+
+- Set `FrameFormat = FDCAN_FRAME_CLASSIC` so it can talk to the F429's bxCAN. Don't send CAN FD frames on this bus.
+- Set nonzero message RAM sizes (`StdFiltersNbr`, `RxFifo0ElmtsNbr`, `TxFifoQueueElmtsNbr` ≥ 1, with 8-byte data fields). If they are left at zero, the peripheral will not send or receive.

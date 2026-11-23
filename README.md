@@ -15,6 +15,8 @@ Transceivers: Waveshare SN65HVD230 (3.3 V). Pins are the same on both boards (PD
 | CTX | PD1 (CAN1_TX) | PD1 (FDCAN1_TX) |
 | CRX | PD0 (CAN1_RX) | PD0 (FDCAN1_RX) |
 
+![Project 1 wiring: NUCLEO-F429ZI (top) and NUCLEO-H723ZG (bottom), each wired to a Waveshare SN65HVD230 transceiver on the breadboard](images/project1-wiring.jpg)
+
 Bus connections between the two transceivers:
 
 | Waveshare #1 | Waveshare #2 |

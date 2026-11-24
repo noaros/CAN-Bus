@@ -173,6 +173,8 @@ The libraries are git submodules in `lib/`, pinned to fixed releases, so every c
 
 `f429/` is a Makefile project with a linker script, a HAL config that enables only the modules in use, and a minimal `main.c` that sets the clocks used for CAN (180 MHz system clock, 45 MHz APB1) and blinks LD1. Done when it compiles; the CAN code is added in step 3.
 
+Verified on hardware: flashed with `make flash`, and LD1 blinks at 1 Hz, confirming the clock configuration runs.
+
 Build and flash:
 
 ```bash

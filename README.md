@@ -30,7 +30,14 @@ Bus connections between the two transceivers:
 
 ### Bit Timing (500 kbps)
 
-Bit rate = clock ÷ (prescaler × (1 + Seg1 + Seg2)). Sample point = (1 + Seg1) ÷ (1 + Seg1 + Seg2).
+Bit rate = CAN clock ÷ (prescaler × (1 + Seg1 + Seg2)). Sample point = (1 + Seg1) ÷ (1 + Seg1 + Seg2).
+
+The CAN clock is the clock feeding the CAN peripheral (see the "CAN clock" row in the table below), not the CPU core clock:
+
+- **F429ZI:** the APB1 peripheral clock (PCLK1).
+- **H723ZG:** the FDCAN kernel clock, selected by the FDCANSEL mux (HSE, PLL1Q or PLL2Q). FDCAN also uses APB1 for register access, but bit timing comes only from the kernel clock.
+
+Check both values in the CubeMX Clock Configuration tab, and recalculate the prescaler if they differ from the table.
 
 How the formula works:
 

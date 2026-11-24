@@ -143,3 +143,18 @@ FDCAN notes for the H723ZG:
 | `TxElmtSize` | Data bytes per TX slot | `FDCAN_DATA_BYTES_8` | Same as RX: 8 bytes is the classic CAN maximum |
 
 These take about 260 bytes (roughly 2.5% of the message RAM), leaving room for more filters or FDCAN2/3 later.
+
+### Bring-up
+
+Each step adds one new thing, so a failure points to one cause.
+
+#### Step 1: Hardware check ✅
+
+Done before powering the boards, so wiring faults are found with a multimeter instead of showing up later as software bugs.
+
+| Check | Result | Why |
+|---|---|---|
+| Transceiver power on 3V3, not 5V | ✅ | The SN65HVD230 is a 3.3 V part, and its CRX output drives the STM32's PD0 directly. This is the one wiring mistake that could damage hardware |
+| CTX on PD1, CRX on PD0 (both boards) | ✅ | These are the CAN1/FDCAN1 TX/RX pins (AF9). Wrong pins mean frames never reach the bus |
+| CANH to CANL resistance, power off | ✅ 60 Ω | Two 120 Ω terminators in parallel. Confirms both are fitted and the CANH/CANL wires connect the boards (120 Ω would mean a missing terminator or broken wire) |
+| Shared ground | ✅ via USB | Both Nucleos plug into the same laptop, so their grounds are connected without a separate GND wire |

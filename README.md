@@ -41,7 +41,7 @@ The CAN clock is the clock feeding the CAN peripheral (see the "CAN clock" row i
 - **F429ZI:** the APB1 peripheral clock (PCLK1).
 - **H723ZG:** the FDCAN kernel clock, selected by the FDCANSEL mux (HSE, PLL1Q or PLL2Q). FDCAN also uses APB1 for register access, but bit timing comes only from the kernel clock.
 
-One CAN clock tick lasts 1 ÷ CAN clock (12.5 ns at 80 MHz).
+The **period** of the CAN clock is how long one tick lasts: period = 1 ÷ CAN clock (12.5 ns at 80 MHz).
 
 #### 2. Time quantum (tq)
 
@@ -57,14 +57,14 @@ tq:              |<------ tq #1 ------>|<------ tq #2 ------>|      (prescaler =
 So one tq is `prescaler` ticks long:
 
 ```
-tq = prescaler × tick length = prescaler × (1 ÷ CAN clock) = prescaler ÷ CAN clock
+tq = prescaler × period = prescaler × (1 ÷ CAN clock) = prescaler ÷ CAN clock
 ```
 
 A tq has **no fixed length**. Like a beat in music, its real duration depends on the tempo, which is set by the CAN clock and prescaler:
 
 | | NUCLEO-F429ZI | NUCLEO-H723ZG |
 |---|---|---|
-| Tick length (1 ÷ CAN clock) | 1 ÷ 45 MHz = 22.2 ns | 1 ÷ 80 MHz = 12.5 ns |
+| Clock period (1 ÷ CAN clock) | 1 ÷ 45 MHz = 22.2 ns | 1 ÷ 80 MHz = 12.5 ns |
 | Ticks per tq (prescaler) | 6 | 10 |
 | **1 tq** | **133.3 ns** | **125 ns** |
 

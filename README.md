@@ -37,8 +37,6 @@ The CAN clock is the clock feeding the CAN peripheral (see the "CAN clock" row i
 - **F429ZI:** the APB1 peripheral clock (PCLK1).
 - **H723ZG:** the FDCAN kernel clock, selected by the FDCANSEL mux (HSE, PLL1Q or PLL2Q). FDCAN also uses APB1 for register access, but bit timing comes only from the kernel clock.
 
-Check both values in the CubeMX Clock Configuration tab, and recalculate the prescaler if they differ from the table.
-
 How the formula works:
 
 - **Prescaler** divides the CAN clock into time quanta (tq), the smallest unit of time inside a bit. One tq = prescaler ÷ CAN clock (125 ns on the H723: 10 ÷ 80 MHz).

@@ -25,6 +25,7 @@ Bus connections between the two transceivers:
 
 - Wire TX to CTX and RX to CRX straight through (not crossed).
 - Each Waveshare board has a 120 Ω termination resistor, so the bus is terminated at both ends. With power off, CANH to CANL should measure about 60 Ω.
+- The GND wire between transceivers is optional here: with both Nucleos plugged into the same laptop, their grounds are already connected through USB. Add it if a board is powered from a different source (charger, power bank, another computer) or the bus gets longer.
 
 ![Project 1 wiring: NUCLEO-F429ZI (top) and NUCLEO-H723ZG (bottom), each wired to a Waveshare SN65HVD230 transceiver on the breadboard](images/project1-wiring.jpg)
 

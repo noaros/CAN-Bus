@@ -54,13 +54,13 @@ CAN clock ticks: |1|2|3|4|5|6|7|8|9|10|1|2|3|4|5|6|7|8|9|10| ...
 tq:              |<------ tq #1 ------>|<------ tq #2 ------>|      (prescaler = 10)
 ```
 
-So one tq is `prescaler` ticks long:
+So one tq lasts `prescaler` ticks:
 
 ```
 tq = prescaler × period = prescaler × (1 ÷ CAN clock) = prescaler ÷ CAN clock
 ```
 
-A tq has **no fixed length**. Like a beat in music, its real duration depends on the tempo, which is set by the CAN clock and prescaler:
+A tq has **no fixed duration**. Like a beat in music, its real duration depends on the tempo, which is set by the CAN clock and prescaler:
 
 | | NUCLEO-F429ZI | NUCLEO-H723ZG |
 |---|---|---|
@@ -81,7 +81,7 @@ Each bit is split into three segments, all measured in tq:
                                                                 sample point (87.5%)
 ```
 
-| Segment | Length | Purpose |
+| Segment | Duration | Purpose |
 |---|---|---|
 | Sync | Always 1 tq (the "1 +" in the formula) | Where a bit edge is expected. Nodes compare edges against it to stay in step |
 | Seg1 | Configurable | Time before the sample point. Lets the signal travel across the bus and settle before it is read |

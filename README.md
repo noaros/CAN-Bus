@@ -32,6 +32,28 @@ Bus connections between the two transceivers:
 
 Bit rate = clock ÷ (prescaler × (1 + Seg1 + Seg2)). Sample point = (1 + Seg1) ÷ (1 + Seg1 + Seg2).
 
+How the formula works:
+
+- **Prescaler** divides the CAN clock into time quanta (tq), the smallest unit of time inside a bit. One tq = prescaler ÷ CAN clock (125 ns on the H723: 10 ÷ 80 MHz).
+- **Each bit is a whole number of tq**, split into three segments:
+
+```
+|<------------------------- one bit = 16 tq = 2 µs (H723) ------------------------->|
+| Sync |<----------------------- Seg1 (13 tq) ----------------------->|<- Seg2 (2) ->|
+| 1 tq |                                                              ^              |
+                                                                sample point (87.5%)
+```
+
+| Segment | Length | Purpose |
+|---|---|---|
+| Sync | Always 1 tq (the "1 +" in the formula) | Where a bit edge is expected. Nodes compare edges against it to stay in step |
+| Seg1 | Configurable | Time before the sample point. Lets the signal travel across the bus and settle before it is read |
+| Seg2 | Configurable | Time after the sample point. Leaves room to process the bit and to shorten the bit when resynchronizing |
+
+The bus is read at the end of Seg1. A longer Seg1 moves the sample point later; 87.5% is the CiA-recommended value for rates up to 800 kbps. The CAN spec splits Seg1 into Prop_Seg and Phase_Seg1; STM32 combines them into one setting.
+
+**SJW (synchronization jump width)** is the most the controller may adjust one bit, in tq, to stay in step with the other nodes. When an edge arrives late, it lengthens Seg1 by up to SJW; when it arrives early, it shortens Seg2 by up to SJW. SJW must not exceed Seg2. A larger SJW tolerates more clock mismatch between nodes. Both clocks here come from crystals, so 1 tq is enough; raising it to 2 (the Seg2 limit) is a first step if the bus shows intermittent errors.
+
 | Setting | NUCLEO-F429ZI (bxCAN) | NUCLEO-H723ZG (FDCAN) |
 |---|---|---|
 | CAN clock | APB1 = 45 MHz (180 MHz system clock) | FDCAN kernel clock = 80 MHz |

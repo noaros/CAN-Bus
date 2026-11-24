@@ -30,17 +30,49 @@ Bus connections between the two transceivers:
 
 ### Bit Timing (500 kbps)
 
-Bit rate = CAN clock ÷ (prescaler × (1 + Seg1 + Seg2)). Sample point = (1 + Seg1) ÷ (1 + Seg1 + Seg2).
+Bit rate = CAN clock ÷ (prescaler × (1 + Seg1 + Seg2))
+
+The formula builds a bit in three steps: clock ticks → time quanta (tq) → one bit.
+
+#### 1. CAN clock
 
 The CAN clock is the clock feeding the CAN peripheral (see the "CAN clock" row in the table below), not the CPU core clock:
 
 - **F429ZI:** the APB1 peripheral clock (PCLK1).
 - **H723ZG:** the FDCAN kernel clock, selected by the FDCANSEL mux (HSE, PLL1Q or PLL2Q). FDCAN also uses APB1 for register access, but bit timing comes only from the kernel clock.
 
-How the formula works:
+One CAN clock tick lasts 1 ÷ CAN clock (12.5 ns at 80 MHz).
 
-- **Prescaler** divides the CAN clock into time quanta (tq), the smallest unit of time inside a bit. One tq = prescaler ÷ CAN clock (125 ns on the H723: 10 ÷ 80 MHz).
-- **Each bit is a whole number of tq**, split into three segments:
+#### 2. Time quantum (tq)
+
+A **time quantum (tq)** is the basic unit of time the CAN controller uses to build a bit. Every part of the bit (Sync, Seg1, Seg2, SJW) is set as a whole number of tq, because tq are what the hardware counts.
+
+The **prescaler** creates the tq. It is a counter that counts CAN clock ticks and marks one tq every `prescaler` ticks:
+
+```
+CAN clock ticks: |1|2|3|4|5|6|7|8|9|10|1|2|3|4|5|6|7|8|9|10| ...
+tq:              |<------ tq #1 ------>|<------ tq #2 ------>|      (prescaler = 10)
+```
+
+So one tq is `prescaler` ticks long:
+
+```
+tq = prescaler × tick length = prescaler × (1 ÷ CAN clock) = prescaler ÷ CAN clock
+```
+
+A tq has **no fixed length**. Like a beat in music, its real duration depends on the tempo, which is set by the CAN clock and prescaler:
+
+| | NUCLEO-F429ZI | NUCLEO-H723ZG |
+|---|---|---|
+| Tick length (1 ÷ CAN clock) | 1 ÷ 45 MHz = 22.2 ns | 1 ÷ 80 MHz = 12.5 ns |
+| Ticks per tq (prescaler) | 6 | 10 |
+| **1 tq** | **133.3 ns** | **125 ns** |
+
+A bigger prescaler means more ticks per tq, so a longer tq and a slower bit rate.
+
+#### 3. One bit is a whole number of tq
+
+Each bit is split into three segments, all measured in tq:
 
 ```
 |<------------------------- one bit = 16 tq = 2 µs (H723) ------------------------->|
@@ -55,9 +87,33 @@ How the formula works:
 | Seg1 | Configurable | Time before the sample point. Lets the signal travel across the bus and settle before it is read |
 | Seg2 | Configurable | Time after the sample point. Leaves room to process the bit and to shorten the bit when resynchronizing |
 
+#### 4. Putting it together
+
+```
+bit time = tq × (1 + Seg1 + Seg2) = (prescaler ÷ CAN clock) × (1 + Seg1 + Seg2)
+bit rate = 1 ÷ bit time           = CAN clock ÷ (prescaler × (1 + Seg1 + Seg2))
+```
+
+| | NUCLEO-F429ZI | NUCLEO-H723ZG |
+|---|---|---|
+| 1 tq | 133.3 ns | 125 ns |
+| tq per bit (1 + Seg1 + Seg2) | 1 + 12 + 2 = 15 | 1 + 13 + 2 = 16 |
+| Bit time | 15 × 133.3 ns = 2 µs | 16 × 125 ns = 2 µs |
+| Bit rate | 1 ÷ 2 µs = 500 kbps | 1 ÷ 2 µs = 500 kbps |
+
+The two boards use different clocks, prescalers and tq counts, but arrive at the same 2 µs bit time. That is the only thing nodes on a bus must agree on.
+
+#### Sample point
+
+Sample point = (1 + Seg1) ÷ (1 + Seg1 + Seg2)
+
 The bus is read at the end of Seg1. A longer Seg1 moves the sample point later; 87.5% is the CiA-recommended value for rates up to 800 kbps. The CAN spec splits Seg1 into Prop_Seg and Phase_Seg1; STM32 combines them into one setting.
 
+#### SJW
+
 **SJW (synchronization jump width)** is the most the controller may adjust one bit, in tq, to stay in step with the other nodes. When an edge arrives late, it lengthens Seg1 by up to SJW; when it arrives early, it shortens Seg2 by up to SJW. SJW must not exceed Seg2. A larger SJW tolerates more clock mismatch between nodes. Both clocks here come from crystals, so 1 tq is enough; raising it to 2 (the Seg2 limit) is a first step if the bus shows intermittent errors.
+
+#### Settings
 
 | Setting | NUCLEO-F429ZI (bxCAN) | NUCLEO-H723ZG (FDCAN) |
 |---|---|---|

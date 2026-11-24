@@ -57,14 +57,14 @@ tq:              |<------ tq #1 ------>|<------ tq #2 ------>|      (prescaler =
 So one tq lasts `prescaler` ticks:
 
 ```
-tq = prescaler × period = prescaler × (1 ÷ CAN clock) = prescaler ÷ CAN clock
+tq = prescaler × CAN clock period = prescaler × (1 ÷ CAN clock) = prescaler ÷ CAN clock
 ```
 
 A tq has **no fixed duration**. Like a beat in music, its real duration depends on the tempo, which is set by the CAN clock and prescaler:
 
 | | NUCLEO-F429ZI | NUCLEO-H723ZG |
 |---|---|---|
-| Clock period (1 ÷ CAN clock) | 1 ÷ 45 MHz = 22.2 ns | 1 ÷ 80 MHz = 12.5 ns |
+| CAN clock period (1 ÷ CAN clock) | 1 ÷ 45 MHz = 22.2 ns | 1 ÷ 80 MHz = 12.5 ns |
 | Ticks per tq (prescaler) | 6 | 10 |
 | **1 tq** | **133.3 ns** | **125 ns** |
 

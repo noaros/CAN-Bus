@@ -171,15 +171,15 @@ The libraries are git submodules in `lib/`, pinned to fixed releases, so every c
 | `lib/cmsis-device-f4` | v2.6.12 | F4 register definitions, startup code, `system_stm32f4xx.c` |
 | `lib/cmsis_core` | v5.9.0 | Cortex-M core headers |
 
-`f429/` is a CMake project with a linker script, a HAL config that enables only the modules in use, and a minimal `main.c` that sets the clocks used for CAN (180 MHz system clock, 45 MHz APB1) and blinks LD1. Done when it compiles; the CAN code is added in step 3.
+`f429/` is a Makefile project with a linker script, a HAL config that enables only the modules in use, and a minimal `main.c` that sets the clocks used for CAN (180 MHz system clock, 45 MHz APB1) and blinks LD1. Done when it compiles; the CAN code is added in step 3.
 
 Build and flash:
 
 ```bash
 git clone --recurse-submodules https://github.com/noaros/CAN-Bus.git
-cmake -S f429 -B f429/build
-cmake --build f429/build
-STM32_Programmer_CLI -c port=SWD -w f429/build/f429.elf -rst
+cd CAN-Bus/f429
+make
+make flash
 ```
 
-Requires `arm-none-eabi-gcc`, CMake and STM32CubeProgrammer.
+`make flash` uses `STM32_Programmer_CLI` over the ST-LINK. Requires `arm-none-eabi-gcc`, GNU Make and STM32CubeProgrammer.

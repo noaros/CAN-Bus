@@ -142,4 +142,4 @@ FDCAN notes for the H723ZG:
 | `TxFifoQueueElmtsNbr` | Transmit queue slots | 8 | Lets the application queue several frames without waiting for each to send |
 | `TxElmtSize` | Data bytes per TX slot | `FDCAN_DATA_BYTES_8` | Same as RX: 8 bytes is the classic CAN maximum |
 
-These use well under 1% of the message RAM, leaving room for more filters or FDCAN2/3 later.
+These take about 260 bytes (roughly 2.5% of the message RAM), leaving room for more filters or FDCAN2/3 later.

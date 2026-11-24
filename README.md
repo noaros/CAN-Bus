@@ -132,22 +132,14 @@ FDCAN notes for the H723ZG:
 
 #### FDCAN message RAM
 
-bxCAN has fixed hardware storage (3 TX mailboxes, 2 RX FIFOs of 3 messages each, 28 filter banks). FDCAN has none: every filter, received message and outgoing message lives in a shared **message RAM** (about 10 KB on the H723, shared by FDCAN1–3). `HAL_FDCAN_Init()` divides it into sections using the sizes in the init struct, and a size of 0 means that section does not exist.
+**Why it must be set:** bxCAN has fixed hardware mailboxes and FIFOs. FDCAN has none; it stores filters and messages in a shared message RAM that `HAL_FDCAN_Init()` divides up using the sizes below. A size of 0 means that storage doesn't exist, so nothing can be sent, received or filtered.
 
-| Setting at 0 | Result |
-|---|---|
-| `TxFifoQueueElmtsNbr` | Nowhere to queue outgoing messages. `HAL_FDCAN_AddMessageToTxFifoQ()` fails and nothing is sent |
-| `RxFifo0ElmtsNbr` | Received frames are silently dropped and the RX interrupt never fires. The controller still ACKs them, so the bus looks healthy |
-| `StdFiltersNbr` | No ID filters can be configured |
+| Setting | What it sets | Value | Why this value |
+|---|---|---|---|
+| `StdFiltersNbr` | Number of standard (11-bit) ID filters | 1 | Project 1 accepts one ID range from the F429 |
+| `RxFifo0ElmtsNbr` | Receive FIFO slots | 8 | Holds a burst of about 2 ms of back-to-back frames at 500 kbps, so none are lost while the CPU is busy |
+| `RxFifo0ElmtSize` | Data bytes per RX slot | `FDCAN_DATA_BYTES_8` | Classic CAN payloads are at most 8 bytes; larger sizes are only for CAN FD |
+| `TxFifoQueueElmtsNbr` | Transmit queue slots | 8 | Lets the application queue several frames without waiting for each to send |
+| `TxElmtSize` | Data bytes per TX slot | `FDCAN_DATA_BYTES_8` | Same as RX: 8 bytes is the classic CAN maximum |
 
-Starting values for this project:
-
-```c
-hfdcan1.Init.StdFiltersNbr       = 1;
-hfdcan1.Init.RxFifo0ElmtsNbr     = 8;
-hfdcan1.Init.RxFifo0ElmtSize     = FDCAN_DATA_BYTES_8;
-hfdcan1.Init.TxFifoQueueElmtsNbr = 8;
-hfdcan1.Init.TxElmtSize          = FDCAN_DATA_BYTES_8;
-```
-
-Use 8-byte elements for classic CAN; larger sizes (up to 64 bytes) are for CAN FD. If more than one FDCAN instance is used, give each a different `MessageRAMOffset` so their sections don't overlap.
+These use well under 1% of the message RAM, leaving room for more filters or FDCAN2/3 later.

@@ -129,3 +129,25 @@ FDCAN notes for the H723ZG:
 
 - Set `FrameFormat = FDCAN_FRAME_CLASSIC` so it can talk to the F429's bxCAN. Don't send CAN FD frames on this bus.
 - Set nonzero message RAM sizes (`StdFiltersNbr`, `RxFifo0ElmtsNbr`, `TxFifoQueueElmtsNbr` ≥ 1, with 8-byte data fields). If they are left at zero, the peripheral will not send or receive.
+
+#### FDCAN message RAM
+
+bxCAN has fixed hardware storage (3 TX mailboxes, 2 RX FIFOs of 3 messages each, 28 filter banks). FDCAN has none: every filter, received message and outgoing message lives in a shared **message RAM** (about 10 KB on the H723, shared by FDCAN1–3). `HAL_FDCAN_Init()` divides it into sections using the sizes in the init struct, and a size of 0 means that section does not exist.
+
+| Setting at 0 | Result |
+|---|---|
+| `TxFifoQueueElmtsNbr` | Nowhere to queue outgoing messages. `HAL_FDCAN_AddMessageToTxFifoQ()` fails and nothing is sent |
+| `RxFifo0ElmtsNbr` | Received frames are silently dropped and the RX interrupt never fires. The controller still ACKs them, so the bus looks healthy |
+| `StdFiltersNbr` | No ID filters can be configured |
+
+Starting values for this project:
+
+```c
+hfdcan1.Init.StdFiltersNbr       = 1;
+hfdcan1.Init.RxFifo0ElmtsNbr     = 8;
+hfdcan1.Init.RxFifo0ElmtSize     = FDCAN_DATA_BYTES_8;
+hfdcan1.Init.TxFifoQueueElmtsNbr = 8;
+hfdcan1.Init.TxElmtSize          = FDCAN_DATA_BYTES_8;
+```
+
+Use 8-byte elements for classic CAN; larger sizes (up to 64 bytes) are for CAN FD. If more than one FDCAN instance is used, give each a different `MessageRAMOffset` so their sections don't overlap.

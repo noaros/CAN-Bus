@@ -1,0 +1,12 @@
+[submodule "lib/cmsis_core"]
+	path = lib/cmsis_core
+	url = https://github.com/STMicroelectronics/cmsis_core.git
+	shallow = true
+[submodule "lib/cmsis-device-f4"]
+	path = lib/cmsis-device-f4
+	url = https://github.com/STMicroelectronics/cmsis-device-f4.git
+	shallow = true
+[submodule "lib/stm32f4xx-hal-driver"]
+	path = lib/stm32f4xx-hal-driver
+	url = https://github.com/STMicroelectronics/stm32f4xx-hal-driver.git
+	shallow = true

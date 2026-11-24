@@ -158,3 +158,28 @@ Done before powering the boards, so wiring faults are found with a multimeter in
 | CTX on PD1, CRX on PD0 (both boards) | ✅ | These are the CAN1/FDCAN1 TX/RX pins (AF9). Wrong pins mean frames never reach the bus |
 | CANH to CANL resistance, power off | ✅ 60 Ω | Two 120 Ω terminators in parallel. Confirms both are fitted and the CANH/CANL wires connect the boards (120 Ω would mean a missing terminator or broken wire) |
 | Shared ground | ✅ via USB | Both Nucleos plug into the same laptop, so their grounds are connected without a separate GND wire |
+
+#### Step 2: HAL libraries and build setup ✅
+
+Needed before any firmware can be built. ST's HAL provides the peripheral drivers (`HAL_CAN_*`, `HAL_UART_*`), and CMSIS provides the register definitions and startup code.
+
+The libraries are git submodules in `lib/`, pinned to fixed releases, so every clone builds against the same code without installing STM32CubeIDE:
+
+| Submodule | Version | Provides |
+|---|---|---|
+| `lib/stm32f4xx-hal-driver` | v1.8.6 | F4 HAL drivers |
+| `lib/cmsis-device-f4` | v2.6.12 | F4 register definitions, startup code, `system_stm32f4xx.c` |
+| `lib/cmsis_core` | v5.9.0 | Cortex-M core headers |
+
+`f429/` is a CMake project with a linker script, a HAL config that enables only the modules in use, and a minimal `main.c` that sets the clocks used for CAN (180 MHz system clock, 45 MHz APB1) and blinks LD1. Done when it compiles; the CAN code is added in step 3.
+
+Build and flash:
+
+```bash
+git clone --recurse-submodules https://github.com/noaros/CAN-Bus.git
+cmake -S f429 -B f429/build
+cmake --build f429/build
+STM32_Programmer_CLI -c port=SWD -w f429/build/f429.elf -rst
+```
+
+Requires `arm-none-eabi-gcc`, CMake and STM32CubeProgrammer.

@@ -128,7 +128,6 @@ The bus is read at the end of Seg1. A longer Seg1 moves the sample point later; 
 FDCAN notes for the H723ZG:
 
 - Set `FrameFormat = FDCAN_FRAME_CLASSIC` so it can talk to the F429's bxCAN. Don't send CAN FD frames on this bus.
-- Set nonzero message RAM sizes (`StdFiltersNbr`, `RxFifo0ElmtsNbr`, `TxFifoQueueElmtsNbr` ≥ 1, with 8-byte data fields). If they are left at zero, the peripheral will not send or receive.
 
 #### FDCAN message RAM
 

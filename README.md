@@ -325,7 +325,7 @@ Verified on hardware: flashed both with `make flash`, then read both over SWD:
 | Error passive / bus-off | no / no | no / no |
 | Red LED | off | off |
 
-The H723 received exactly the 177 frames the F429 sent. The F429 shows 180 of 181 because it was read first, and the H723 sent one more before it was read. Two leftovers from the flashing order, both expected:
+The H723 received exactly the 177 frames the F429 sent. The F429 shows 180 of the H723's 181 because the values are read one at a time over SWD, not at the same moment: the F429's `rx.ok` was read before the H723's `tx_count`, and the H723 sent one more frame in between. Two leftovers from the flashing order, both expected:
 
 - The H723 counted 1 bad frame: between the two flashes, the F429 was still running its step 3 loopback firmware, which drives TX and sent one `0x123` frame. Step 6 doesn't expect that ID
 - The H723's TEC was 112 right after both were flashed: during that same window nobody acknowledged its frames, since a node in loopback mode ignores the bus. It fell by 1 per frame and reached 0 within about a minute

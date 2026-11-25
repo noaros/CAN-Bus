@@ -235,7 +235,7 @@ H7 differences from the F429 setup:
 
 - **Power supply:** the H723 has no SMPS (switched-mode power supply: an on-chip regulator that switches rapidly to step the voltage down efficiently, found on some H7 parts), so the core runs from the internal LDO (low-dropout regulator: a simpler linear regulator that burns the excess voltage as heat). This is set with `HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY)`, and `USE_PWR_LDO_SUPPLY` for the startup code
 - **Voltage scale 0:** allows up to 550 MHz, so 400 MHz has margin. Flash needs 2 wait states at 200 MHz AXI
-- **RAM:** data, heap and stack go in the 128 KB DTCM at `0x20000000`, the fastest RAM for the CPU. DMA can't reach DTCM, which doesn't matter here because FDCAN uses its own message RAM
+- **RAM:** data, heap and stack go in the 128 KB DTCM (data tightly coupled memory: RAM wired directly to the CPU core, single-cycle and uncached) at `0x20000000`, the fastest RAM for the CPU. Because it isn't on the bus matrix, the DMA controllers DMA1 and DMA2 (direct memory access: hardware that copies data between peripherals and memory without the CPU) can't reach it. That doesn't matter here: FDCAN doesn't use DMA, it moves frames into its own message RAM by itself. A DMA buffer added later (for example for UART) must go in AXI SRAM (`RAM_D1`) or D2 SRAM (`RAM_D2`) instead
 
 To check the clocks without a scope, `main.c` stores the frequencies the HAL computes from the RCC registers in `clk_sys_hz` and `clk_fdcan_hz`, readable over SWD. Done when LD1 blinks at 1 Hz, `clk_sys_hz` is 400000000 and `clk_fdcan_hz` is 80000000.
 

@@ -1,12 +1,17 @@
 /*
- * NUCLEO-H723ZG: first exchange with the F429 over the real bus
- * (bring-up step 6).
+ * NUCLEO-H723ZG: exchange with the F429 over the real bus, with hardware
+ * acceptance filtering (bring-up step 7).
  *
  * FDCAN1 runs classic CAN at 500 kbps in normal mode. Every 500 ms it sends
  * ID 0x200 (P1_ID_H723) with an incrementing counter, and it receives the
  * F429's ID 0x100 frames, checking the ID, DLC, pattern and that the
  * counter goes up by exactly 1. Frame layout is shared with the F429 in
  * common/project1_frames.h.
+ *
+ * The filter accepts only ID 0x100. To test it, each board also sends a
+ * decoy (here 0x201) that the other board's filter must drop in hardware;
+ * a decoy reaching software would be counted in rx.bad. Build with
+ * `make FILTER=all` for the accept-all control, where decoys do get through.
  *
  *   LD2 (yellow, PE1)  toggles on every frame queued for sending
  *   LD1 (green, PB0)   toggles on every good frame from the F429
@@ -22,8 +27,8 @@
  * update_bus_status() does). Only a failed HAL setup call stops everything.
  *
  * For checking over SWD: clk_sys_hz, clk_fdcan_hz, tx_count, tx_skipped,
- * rx (p1_rx_stats_t), rx_lost_fifo, bus_off_recoveries and bus (error
- * counters and state, refreshed every 500 ms).
+ * decoy_count, rx (p1_rx_stats_t), rx_lost_fifo, bus_off_recoveries and bus
+ * (error counters and state, refreshed every 500 ms).
  */
 #include "stm32h7xx_hal.h"
 #include "project1_frames.h"
@@ -40,10 +45,12 @@ volatile uint32_t clk_sys_hz;
 volatile uint32_t clk_fdcan_hz;
 
 volatile uint32_t tx_count;           /* frames queued for sending */
-volatile uint32_t tx_skipped;         /* sends skipped because the TX queue was full */
+volatile uint32_t tx_skipped;         /* sends skipped because the TX queue had < 2 free slots */
+volatile uint32_t decoy_count;        /* decoy frames queued for sending */
 volatile p1_rx_stats_t rx;            /* frames received from the F429 */
 volatile uint32_t rx_lost_fifo;       /* Rx FIFO 0 message lost: it was full */
 volatile uint32_t bus_off_recoveries; /* restarts after bus-off */
+volatile p1_err_counts_t errs;        /* bus errors by type (see project1_frames.h) */
 
 /* Snapshot of FDCAN1's error counters (ECR) and protocol status (PSR) */
 volatile struct {
@@ -57,7 +64,7 @@ volatile struct {
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void FDCAN1_Init(void);
-static void FDCAN1_FilterAcceptAll(void);
+static void FDCAN1_Filter(void);
 static void update_bus_status(void);
 void Error_Handler(void);
 
@@ -71,10 +78,11 @@ int main(void)
     clk_fdcan_hz = (uint32_t)HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FDCAN);
 
     FDCAN1_Init();
-    FDCAN1_FilterAcceptAll();
+    FDCAN1_Filter();
 
     if (HAL_FDCAN_ActivateNotification(&hfdcan1,
-            FDCAN_IT_RX_FIFO0_NEW_MESSAGE | FDCAN_IT_RX_FIFO0_MESSAGE_LOST, 0) != HAL_OK) {
+            FDCAN_IT_RX_FIFO0_NEW_MESSAGE | FDCAN_IT_RX_FIFO0_MESSAGE_LOST |
+            FDCAN_IT_ARB_PROTOCOL_ERROR, 0) != HAL_OK) {
         Error_Handler();
     }
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
@@ -92,6 +100,8 @@ int main(void)
         .TxEventFifoControl  = FDCAN_NO_TX_EVENTS,
         .MessageMarker       = 0,
     };
+    FDCAN_TxHeaderTypeDef decoy = tx;
+    decoy.Identifier = P1_ID_H723_DECOY;
     uint8_t data[8];
 
     while (1) {
@@ -100,8 +110,8 @@ int main(void)
 
         /* The queue fills while no node acknowledges (the controller keeps
          * retrying). Skip rather than stop; sending resumes once the F429
-         * is back. */
-        if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0) {
+         * is back. Two slots are needed: the frame and the decoy. */
+        if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) < 2) {
             tx_skipped++;
             continue;
         }
@@ -109,6 +119,11 @@ int main(void)
         tx_count++;
         p1_fill_payload(data, tx_count);
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx, data) != HAL_OK) {
+            Error_Handler();
+        }
+        /* Same payload under the decoy ID: the F429 must never see it */
+        decoy_count++;
+        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &decoy, data) != HAL_OK) {
             Error_Handler();
         }
         HAL_GPIO_TogglePin(GPIOE, LED_YELLOW);
@@ -173,6 +188,18 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
     HAL_GPIO_TogglePin(GPIOB, LED_GREEN);
 }
 
+/* Protocol error (classic CAN only has the nominal "arbitration" phase):
+ * count it by the last error code in PSR, then carry on */
+void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
+{
+    uint32_t lec = hfdcan->Instance->PSR & FDCAN_PSR_LEC;
+
+    if (lec >= 1 && lec <= 6) {
+        errs.lec[lec]++;
+    }
+    hfdcan->ErrorCode = HAL_FDCAN_ERROR_NONE;
+}
+
 /*
  * 500 kbps classic CAN from the 80 MHz FDCAN kernel clock (see README,
  * Bit Timing): tq = 10 / 80 MHz = 125 ns, bit = (1 + 13 + 2) tq = 2 us,
@@ -219,21 +246,32 @@ static void FDCAN1_Init(void)
 }
 
 /*
+ * Standard filter element 0 in classic ID/mask mode: FilterID1 is the ID
+ * and FilterID2 the mask, both as plain 11-bit values (no shifting, unlike
+ * bxCAN). Mask bit 1 = must match, 0 = don't care; 0x7FF compares every ID
+ * bit, so only ID 0x100 passes.
+ *
  * Unlike bxCAN, FDCAN's global filter accepts frames that match no filter
- * into Rx FIFO 0 by default. Set it to reject them, so frames only get in
- * through the configured filter, as on the F429. That filter is a classic
- * ID/mask filter with mask 0: no ID bits compared, every standard ID
- * accepted. Narrowed to the F429's ID in a later step, once the bus works.
+ * into Rx FIFO 0 by default. It is set to reject them, along with all
+ * remote frames, so frames only get in through filter element 0.
+ *
+ * With -DP1_FILTER_ACCEPT_ALL (make FILTER=all) the mask is 0 instead, so
+ * every standard data frame passes: the control for step 7's decoy test.
  */
-static void FDCAN1_FilterAcceptAll(void)
+static void FDCAN1_Filter(void)
 {
+#ifdef P1_FILTER_ACCEPT_ALL
+    const uint32_t id = 0x000, mask = 0x000;
+#else
+    const uint32_t id = P1_ID_F429, mask = 0x7FF;
+#endif
     FDCAN_FilterTypeDef f = {
         .IdType       = FDCAN_STANDARD_ID,
         .FilterIndex  = 0,
         .FilterType   = FDCAN_FILTER_MASK,
         .FilterConfig = FDCAN_FILTER_TO_RXFIFO0,
-        .FilterID1    = 0x000,    /* ID */
-        .FilterID2    = 0x000,    /* mask */
+        .FilterID1    = id,
+        .FilterID2    = mask,
     };
     if (HAL_FDCAN_ConfigFilter(&hfdcan1, &f) != HAL_OK) {
         Error_Handler();

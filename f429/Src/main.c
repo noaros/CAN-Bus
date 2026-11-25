@@ -1,12 +1,17 @@
 /*
- * NUCLEO-F429ZI: first exchange with the H723 over the real bus
- * (bring-up step 6).
+ * NUCLEO-F429ZI: exchange with the H723 over the real bus, with hardware
+ * acceptance filtering (bring-up step 7).
  *
  * CAN1 runs at 500 kbps in normal mode. Every 500 ms it sends ID 0x100
  * (P1_ID_F429) with an incrementing counter, and it receives the H723's
  * ID 0x200 frames, checking the ID, DLC, pattern and that the counter goes
  * up by exactly 1. Frame layout is shared with the H723 in
  * common/project1_frames.h.
+ *
+ * The filter accepts only ID 0x200. To test it, each board also sends a
+ * decoy (here 0x101) that the other board's filter must drop in hardware;
+ * a decoy reaching software would be counted in rx.bad. Build with
+ * `make FILTER=all` for the accept-all control, where decoys do get through.
  *
  *   LD2 (blue, PB7)   toggles on every frame queued for sending
  *   LD1 (green, PB0)  toggles on every good frame from the H723
@@ -21,8 +26,9 @@
  * error counters rise to error passive), and CAN recovers by itself once it
  * returns. Only a failed HAL setup call stops everything (red on, others off).
  *
- * For checking over SWD: tx_count, tx_skipped, rx (p1_rx_stats_t), rx_overruns
- * and bus (error counters and state, refreshed every 500 ms).
+ * For checking over SWD: tx_count, tx_skipped, decoy_count, rx
+ * (p1_rx_stats_t), rx_overruns and bus (error counters and state,
+ * refreshed every 500 ms).
  */
 #include "stm32f4xx_hal.h"
 #include "project1_frames.h"
@@ -36,9 +42,11 @@
 CAN_HandleTypeDef hcan1;
 
 volatile uint32_t tx_count;     /* frames queued for sending */
-volatile uint32_t tx_skipped;   /* sends skipped because all 3 mailboxes were busy */
+volatile uint32_t tx_skipped;   /* sends skipped because fewer than 2 mailboxes were free */
+volatile uint32_t decoy_count;  /* decoy frames queued for sending */
 volatile p1_rx_stats_t rx;      /* frames received from the H723 */
 volatile uint32_t rx_overruns;  /* FIFO0 overruns: frames lost because it was full */
+volatile p1_err_counts_t errs;  /* bus errors by type (see project1_frames.h) */
 
 /* Snapshot of CAN1's error status register (ESR) */
 volatile struct {
@@ -52,7 +60,7 @@ volatile struct {
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void CAN1_Init(void);
-static void CAN1_FilterAcceptAll(void);
+static void CAN1_Filter(void);
 static void update_bus_status(void);
 void Error_Handler(void);
 
@@ -62,10 +70,11 @@ int main(void)
     SystemClock_Config();
     LED_Init();
     CAN1_Init();
-    CAN1_FilterAcceptAll();
+    CAN1_Filter();
 
     if (HAL_CAN_ActivateNotification(&hcan1,
-            CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_RX_FIFO0_OVERRUN) != HAL_OK) {
+            CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_RX_FIFO0_OVERRUN |
+            CAN_IT_ERROR | CAN_IT_LAST_ERROR_CODE) != HAL_OK) {
         Error_Handler();
     }
     if (HAL_CAN_Start(&hcan1) != HAL_OK) {
@@ -79,6 +88,8 @@ int main(void)
         .DLC                = P1_DLC,
         .TransmitGlobalTime = DISABLE,
     };
+    CAN_TxHeaderTypeDef decoy = tx;
+    decoy.StdId = P1_ID_F429_DECOY;
     uint8_t data[8];
     uint32_t mailbox;
 
@@ -88,8 +99,8 @@ int main(void)
 
         /* Mailboxes stay busy while no node acknowledges (the controller
          * keeps retrying). Skip rather than stop; sending resumes once the
-         * H723 is back. */
-        if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0) {
+         * H723 is back. Two are needed: the frame and the decoy. */
+        if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) < 2) {
             tx_skipped++;
             continue;
         }
@@ -97,6 +108,11 @@ int main(void)
         tx_count++;
         p1_fill_payload(data, tx_count);
         if (HAL_CAN_AddTxMessage(&hcan1, &tx, data, &mailbox) != HAL_OK) {
+            Error_Handler();
+        }
+        /* Same payload under the decoy ID: the H723 must never see it */
+        decoy_count++;
+        if (HAL_CAN_AddTxMessage(&hcan1, &decoy, data, &mailbox) != HAL_OK) {
             Error_Handler();
         }
         HAL_GPIO_TogglePin(GPIOB, LED_BLUE);
@@ -140,12 +156,18 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     HAL_GPIO_TogglePin(GPIOB, LED_GREEN);
 }
 
-/* Only FIFO0 overrun is enabled as an error interrupt: count it and carry on */
+/* FIFO0 overrun and bus errors (by last error code): count and carry on */
 void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
 {
-    if (hcan->ErrorCode & HAL_CAN_ERROR_RX_FOV0) {
-        rx_overruns++;
-    }
+    uint32_t e = hcan->ErrorCode;
+
+    if (e & HAL_CAN_ERROR_RX_FOV0) rx_overruns++;
+    if (e & HAL_CAN_ERROR_STF)     errs.lec[1]++;
+    if (e & HAL_CAN_ERROR_FOR)     errs.lec[2]++;
+    if (e & HAL_CAN_ERROR_ACK)     errs.lec[3]++;
+    if (e & HAL_CAN_ERROR_BR)      errs.lec[4]++;
+    if (e & HAL_CAN_ERROR_BD)      errs.lec[5]++;
+    if (e & HAL_CAN_ERROR_CRC)     errs.lec[6]++;
     HAL_CAN_ResetError(hcan);
 }
 
@@ -173,20 +195,36 @@ static void CAN1_Init(void)
 }
 
 /*
- * Without an active filter bxCAN discards every received frame. Mask 0
- * means no ID bits are compared, so every frame is accepted into FIFO0.
- * Narrowed to the H723's ID in a later step, once the bus works.
+ * Bank 0, 32-bit ID/mask mode. In 32-bit scale the registers hold the
+ * frame's identifier field as bxCAN stores it, not the plain ID:
+ *
+ *   bits 31:21  standard ID (11 bits)    -> ID << 21, or << 5 in the high half
+ *   bits 20:3   extended ID bits 17:0    (unused for standard frames)
+ *   bit  2      IDE: 0 standard, 1 extended
+ *   bit  1      RTR: 0 data, 1 remote
+ *
+ * Mask bit 1 = must match, 0 = don't care. This mask compares all 11 ID
+ * bits plus IDE and RTR, so only standard data frames with ID 0x200 pass.
+ *
+ * With -DP1_FILTER_ACCEPT_ALL (make FILTER=all) the mask is 0 instead, so
+ * every frame passes: the control for step 7's decoy test.
  */
-static void CAN1_FilterAcceptAll(void)
+static void CAN1_Filter(void)
 {
+#ifdef P1_FILTER_ACCEPT_ALL
+    const uint32_t id = 0, mask = 0;
+#else
+    const uint32_t id   = (P1_ID_H723 << 21);         /* IDE = 0, RTR = 0 */
+    const uint32_t mask = (0x7FFU << 21) | CAN_ID_EXT | CAN_RTR_REMOTE;
+#endif
     CAN_FilterTypeDef f = {
         .FilterBank           = 0,
         .FilterMode           = CAN_FILTERMODE_IDMASK,
         .FilterScale          = CAN_FILTERSCALE_32BIT,
-        .FilterIdHigh         = 0,
-        .FilterIdLow          = 0,
-        .FilterMaskIdHigh     = 0,
-        .FilterMaskIdLow      = 0,
+        .FilterIdHigh         = id >> 16,
+        .FilterIdLow          = id & 0xFFFF,
+        .FilterMaskIdHigh     = mask >> 16,
+        .FilterMaskIdLow      = mask & 0xFFFF,
         .FilterFIFOAssignment = CAN_RX_FIFO0,
         .FilterActivation     = CAN_FILTER_ENABLE,
         .SlaveStartFilterBank = 14,  /* banks 0-13 CAN1, 14-27 CAN2 */
@@ -219,8 +257,7 @@ void HAL_CAN_MspInit(CAN_HandleTypeDef *hcan)
     /* RX0 carries all FIFO0 interrupts: message pending and overrun */
     HAL_NVIC_SetPriority(CAN1_RX0_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(CAN1_RX0_IRQn);
-    /* SCE (status change / error): no error interrupts are enabled in this
-     * step, since bus errors are polled from ESR instead */
+    /* SCE (status change / error): bus errors, counted by type in errs */
     HAL_NVIC_SetPriority(CAN1_SCE_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(CAN1_SCE_IRQn);
 }

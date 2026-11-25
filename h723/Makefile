@@ -2,6 +2,8 @@
 #
 #   make           build build/h723.elf (debug)
 #   make DEBUG=0   optimized build
+#   make FILTER=all  control build: accept-all filter instead of the other
+#                  board's ID only (see README, step 7)
 #   make flash     flash over the ST-LINK (SWD) and reset; with several
 #                  ST-LINKs, picks the one whose target has DEVICE_ID
 #   make clean
@@ -9,6 +11,7 @@
 TARGET   := h723
 BUILD    := build
 DEBUG    ?= 1
+FILTER   ?= id
 
 LIB      := ../lib
 HAL      := $(LIB)/stm32h7xx-hal-driver
@@ -37,6 +40,10 @@ LDSCRIPT := STM32H723ZGTx_FLASH.ld
 
 # Flags
 MCU     := -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard
+
+ifeq ($(FILTER),all)
+DEFINES  += -DP1_FILTER_ACCEPT_ALL
+endif
 
 ifeq ($(DEBUG),1)
 OPT     := -Og -g3
@@ -78,6 +85,14 @@ $(BUILD)/_/%.o: ../%.s
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# main.c depends on FILTER: a stamp file named after the current value makes
+# it rebuild when FILTER changes
+$(BUILD)/Src/main.o: $(BUILD)/filter.$(FILTER)
+$(BUILD)/filter.$(FILTER):
+	@mkdir -p $(BUILD)
+	@rm -f $(BUILD)/filter.*
+	@touch $@
 
 flash: $(BUILD)/$(TARGET).elf
 	../tools/flash.sh $(DEVICE_ID) $<

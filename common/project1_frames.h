@@ -13,6 +13,12 @@
 
 #define P1_ID_F429   0x100U   /* frames sent by the F429 */
 #define P1_ID_H723   0x200U   /* frames sent by the H723 */
+
+/* Decoys for testing the acceptance filters (bring-up step 7): each board
+ * also sends a frame whose ID is one bit off its real one. The other
+ * board's filter must drop it in hardware, so it never reaches software. */
+#define P1_ID_F429_DECOY  0x101U
+#define P1_ID_H723_DECOY  0x201U
 #define P1_DLC       8U
 
 static inline void p1_fill_payload(uint8_t data[8], uint32_t count)
@@ -66,5 +72,20 @@ static inline void p1_rx_count(volatile p1_rx_stats_t *s, uint32_t count, uint32
     s->last_ok_tick = tick;
     s->ok++;
 }
+
+/*
+ * Bus errors by type, counted from the CAN controller's last error code
+ * (LEC). bxCAN and FDCAN use the same codes:
+ *   1 stuff      6 equal bits in a row where the sender must insert a stuff bit
+ *   2 form       a fixed-format bit (CRC delimiter, ACK delimiter, EOF) was wrong
+ *   3 ACK        sent a frame and no node acknowledged it
+ *   4 bit 1      sent recessive, read back dominant (outside arbitration)
+ *   5 bit 0      sent dominant, read back recessive
+ *   6 CRC        received CRC didn't match the frame
+ * Index 0 and 7 are unused.
+ */
+typedef struct {
+    uint32_t lec[8];
+} p1_err_counts_t;
 
 #endif /* PROJECT1_FRAMES_H */

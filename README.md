@@ -329,3 +329,40 @@ The H723 received exactly the 177 frames the F429 sent. The F429 shows 180 of th
 
 - The H723 counted 1 bad frame: between the two flashes, the F429 was still running its step 3 loopback firmware, which drives TX and sent one `0x123` frame. Step 6 doesn't expect that ID
 - The H723's TEC was 112 right after both were flashed: during that same window nobody acknowledged its frames, since a node in loopback mode ignores the bus. It fell by 1 per frame and reached 0 within about a minute
+
+#### Step 7: Hardware acceptance filtering
+
+Each board's filter goes from accept-all to only the other board's ID, so the CAN hardware drops every other frame before the CPU sees it. This is the "hardware acceptance filtering" in the Project 1 goal.
+
+| | Accepts | Filter setting |
+|---|---|---|
+| F429 | `0x200` only | Bank 0, 32-bit ID/mask: ID `0x200 << 21`, mask `0x7FF << 21` plus the IDE and RTR bits, so only standard data frames with exactly ID `0x200` pass. In 32-bit scale the registers hold the identifier field as bxCAN stores it (standard ID in bits 31:21, IDE bit 2, RTR bit 1), hence the shift |
+| H723 | `0x100` only | Standard filter element 0, classic ID/mask: ID `0x100`, mask `0x7FF`, as plain 11-bit values with no shift. The global filter still rejects non-matching and remote frames |
+
+**Testing a filter needs frames it should reject.** With only the two real IDs on the bus, a filter that still accepted everything would look the same as a working one. So each board also sends a decoy right after its real frame, with an ID one bit off the real one: `0x101` from the F429 and `0x201` from the H723. One bit off also catches a mask that ignores low ID bits. A decoy that reached the other board's software would be counted in `rx.bad`.
+
+A rejected frame is still acknowledged: every node that receives a frame correctly sends the ACK bit, before and regardless of filtering. So the decoys cause no ACK errors.
+
+**Control build:** `make FILTER=all` keeps the accept-all filter (it defines `P1_FILTER_ACCEPT_ALL`), to show that the decoys do reach the receiver when the filter lets them. A stamp file in `build/` makes `main.c` rebuild when `FILTER` changes.
+
+Both builds also count bus errors by type in `errs`, from the controller's last error code (LEC). bxCAN and FDCAN use the same codes: 1 stuff (6 equal bits in a row, where the sender must have inserted an opposite stuff bit), 2 form (a fixed-format bit such as a delimiter was wrong), 3 ACK, 4 bit 1 (sent recessive, read dominant), 5 bit 0 (sent dominant, read recessive), 6 CRC (received CRC didn't match the frame).
+
+Verified on hardware, reading both boards over SWD:
+
+| Run | Decoys sent by the other board | `rx.bad` | `rx.ok` |
+|---|---|---|---|
+| Control (`FILTER=all`), F429 receiving | 8 → 19 (+11) | 6 → 17 (+11) | Kept up with the H723's frames |
+| Control (`FILTER=all`), H723 receiving | 8 → 19 (+11) | 8 → 19 (+11) | Kept up with the F429's frames |
+| Filtered, F429 receiving | about 128 | **0** | 130, matching the H723's 128 sent (read at different moments) |
+| Filtered, H723 receiving | about 128 | **0** | 129, matching the F429's 128 sent |
+
+Filter registers read back as intended: F429 bank 0 FR1 `0x40000000` (ID), FR2 `0xFFE00006` (mask); H723 filter element 0 in message RAM `0x890007FF` (classic mask filter to Rx FIFO 0, ID `0x100`, mask `0x7FF`).
+
+**Open issue: occasional bit errors from the H723 to the F429.** Over 2 minutes (about 1,000 frames on the bus) the error counters showed:
+
+| | Stuff | Form | ACK | Bit 1 | Bit 0 | CRC |
+|---|---|---|---|---|---|---|
+| F429 | 1 | 0 | 0 | 0 | 0 | 3 |
+| H723 | 0 | 0 | 3 | 1 | 0 | 0 |
+
+These are one fault seen from both ends: the F429 occasionally misreads an H723 frame (CRC and stuff errors), so it doesn't acknowledge it or it interrupts it with an error flag. The H723 sees those as ACK and bit errors. That's about 0.8% of the H723's frames. CAN retransmits them automatically, so no frames were lost (`rx.lost` 0), but a two-node bench bus should have essentially none. The F429 → H723 direction had no errors at all. It isn't caused by the filters, which act only after a frame has been received correctly, and probably existed in step 6 unnoticed, since a few errors are counted back down within seconds. A clock mismatch would cause errors in both directions, so the likelier suspects are the H723's transmit path or the F429's receive path: transceiver, wiring or breadboard contacts. Still to investigate.

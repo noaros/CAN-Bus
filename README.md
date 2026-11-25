@@ -112,7 +112,7 @@ The bus is read at the end of Seg1. A longer Seg1 moves the sample point later; 
 
 #### SJW
 
-**SJW (synchronization jump width)** is the most the controller may adjust one bit, in tq, to stay in step with the other nodes. When an edge arrives late, it lengthens Seg1 by up to SJW; when it arrives early, it shortens Seg2 by up to SJW. SJW must not exceed Seg2. A larger SJW tolerates more clock mismatch between nodes. Both clocks here come from crystals, so 1 tq is enough; raising it to 2 (the Seg2 limit) is a first step if the bus shows intermittent errors.
+**SJW (synchronization jump width)** is the most the controller may adjust one bit, in tq, to stay in step with the other nodes. When an edge arrives late, it lengthens Seg1 by up to SJW; when it arrives early, it shortens Seg2 by up to SJW. SJW must not exceed Seg2. A larger SJW tolerates more clock mismatch between nodes. With SJW 1 tq the two nodes' clocks may differ by about 0.3%; raising SJW to 2 (the Seg2 limit) allows about 0.6%. 1 tq assumed both boards' HSE clocks are crystal-accurate. That turned out not to hold for the H723: see the open issue in step 7.
 
 #### Settings
 
@@ -239,7 +239,7 @@ H7 differences from the F429 setup:
 
 To check the clocks without a scope, `main.c` stores the frequencies the HAL computes from the RCC registers in `clk_sys_hz` and `clk_fdcan_hz`, readable over SWD. Done when LD1 blinks at 1 Hz, `clk_sys_hz` is 400000000 and `clk_fdcan_hz` is 80000000.
 
-Verified on hardware: flashed with `make flash`, and LD1 blinks at 1 Hz with LD3 off. Read over SWD: `clk_sys_hz` = 400000000, `clk_fdcan_hz` = 80000000, FDCANSEL = `01` (PLL1Q), and the HAL tick (`uwTick`: the millisecond counter behind `HAL_Delay()`, incremented by the SysTick interrupt, which fires every 400,000 CPU cycles) advanced 5102 over a 5 s wait plus read time (roughly 5.1 s of wall time: real elapsed time). So the CPU runs at about the 400 MHz the HAL assumes. This is a coarse check, accurate to a few percent; it rules out a wrong clock source or divider, and the exact CAN clock is confirmed by `clk_fdcan_hz`.
+Verified on hardware: flashed with `make flash`, and LD1 blinks at 1 Hz with LD3 off. Read over SWD: `clk_sys_hz` = 400000000, `clk_fdcan_hz` = 80000000, FDCANSEL = `01` (PLL1Q), and the HAL tick (`uwTick`: the millisecond counter behind `HAL_Delay()`, incremented by the SysTick interrupt, which fires every 400,000 CPU cycles) advanced 5102 over a 5 s wait plus read time (roughly 5.1 s of wall time: real elapsed time). So the CPU runs at about the 400 MHz the HAL assumes. This is a coarse check, accurate to a few percent: it rules out a wrong clock source or divider, but not a small error. `clk_sys_hz` and `clk_fdcan_hz` don't catch that either, because the HAL computes them from the register settings assuming HSE is exactly `HSE_VALUE` (8 MHz). A later, precise measurement found the H723 running 1.23% fast (see step 7).
 
 ```bash
 cd h723
@@ -358,11 +358,24 @@ Verified on hardware, reading both boards over SWD:
 
 Filter registers read back as intended: F429 bank 0 FR1 `0x40000000` (ID), FR2 `0xFFE00006` (mask); H723 filter element 0 in message RAM `0x890007FF` (classic mask filter to Rx FIFO 0, ID `0x100`, mask `0x7FF`).
 
-**Open issue: occasional bit errors from the H723 to the F429.** Over 2 minutes (about 1,000 frames on the bus) the error counters showed:
+**Open issue: bus errors, traced to the H723's clock running 1.23% fast.** Over 2 minutes (about 1,000 frames on the bus) the error counters showed:
 
 | | Stuff | Form | ACK | Bit 1 | Bit 0 | CRC |
 |---|---|---|---|---|---|---|
 | F429 | 1 | 0 | 0 | 0 | 0 | 3 |
 | H723 | 0 | 0 | 3 | 1 | 0 | 0 |
 
-These are one fault seen from both ends: the F429 occasionally misreads an H723 frame (CRC and stuff errors), so it doesn't acknowledge it or it interrupts it with an error flag. The H723 sees those as ACK and bit errors. That's about 0.8% of the H723's frames. CAN retransmits them automatically, so no frames were lost (`rx.lost` 0), but a two-node bench bus should have essentially none. The F429 → H723 direction had no errors at all. It isn't caused by the filters, which act only after a frame has been received correctly, and probably existed in step 6 unnoticed, since a few errors are counted back down within seconds. A clock mismatch would cause errors in both directions, so the likelier suspects are the H723's transmit path or the F429's receive path: transceiver, wiring or breadboard contacts. Still to investigate.
+These are one fault seen from both ends: errors on frames sent by the H723. The F429 sees stuff and CRC errors; the H723 sees the matching bit 1 errors (an error flag overriding its recessive bits) and ACK errors (no acknowledgement for a frame the F429 found faulty). CAN retransmits them automatically, so no frames were lost (`rx.lost` 0), but a two-node bench bus should have essentially none. It isn't caused by the filters, which act only after a frame has been received correctly, and probably existed in step 6 unnoticed, since a few errors are counted back down within seconds.
+
+Reseating the wires didn't help. A 15-minute run afterwards showed the same pattern in bursts: 2, then 32, then 9 errors per 5 minutes.
+
+The cause showed up in the frame counts. Both boards send once per `HAL_Delay(500)` loop, yet over the same 902 s the F429 sent 1799 frames (501.4 ms per loop, as expected) and the H723 sent 1821 (495.3 ms). Reading both boards' `uwTick` over 240 s of wall time confirmed it:
+
+| | Ticks | vs wall time |
+|---|---|---|
+| F429 | 240,106 | +0.00% |
+| H723 | 243,051 | **+1.23%** |
+
+The H723's clock registers are as configured (HSE bypass → PLL1 ÷2 ×200; FDCANSEL = PLL1Q), so the error is in the HSE input itself: about 8.098 MHz instead of 8.000. On this board HSE comes from the on-board STLINK-V3's clock output, not a crystal next to the H723. Every H723 clock inherits the error, so its FDCAN clock is about 80.98 MHz and it sends at about 506 kbps instead of 500. With SJW 1 tq the nodes tolerate only about 0.3% mismatch, so frames survive or fail depending on their bit pattern: payloads with long runs of equal bits give the receiver fewer edges to resynchronize on. That fits the bursts, as the counter in the payload moves through different bit patterns. Why the errors show up only on H723 → F429 frames and not the other way is not explained yet.
+
+Still to decide: how to give the H723 an accurate clock.

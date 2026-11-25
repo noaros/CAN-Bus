@@ -112,7 +112,22 @@ The bus is read at the end of Seg1. A longer Seg1 moves the sample point later; 
 
 #### SJW
 
-**SJW (synchronization jump width)** is the most the controller may adjust one bit, in tq, to stay in step with the other nodes. When an edge arrives late, it lengthens Seg1 by up to SJW; when it arrives early, it shortens Seg2 by up to SJW. SJW must not exceed Seg2. A larger SJW tolerates more clock mismatch between nodes. With SJW 1 tq the two nodes' clocks may differ by about 0.3%; raising SJW to 2 (the Seg2 limit) allows about 0.6%. 1 tq assumed both boards' HSE clocks are crystal-accurate. That turned out not to hold for the H723: see the open issue in step 7.
+**SJW (synchronization jump width)** is the most the controller may adjust one bit, in tq, to stay in step with the other nodes. When an edge arrives late, it lengthens Seg1 by up to SJW; when it arrives early, it shortens Seg2 by up to SJW. SJW must not exceed Seg2. A larger SJW tolerates more clock mismatch between nodes.
+
+**Clock tolerance.** The CAN bit timing rules (Bosch / ISO 11898-1) give two limits on df, how far each node's clock may be from nominal; the tolerance is the smaller of the two:
+
+1. Resynchronization: df ≤ SJW ÷ (20 × tq per bit). A node must stay in step across up to 10 bits without an edge, correcting by at most SJW per edge
+2. Error flags: df ≤ min(Seg1, Seg2) ÷ (2 × (13 × tq per bit − Seg2)). Nodes must sample correctly across a 13-bit stretch around error flags, where resynchronization can't help
+
+Two nodes can be off in opposite directions, so the largest allowed difference between two nodes' clocks is 2 × df:
+
+| Settings (H723 / F429) | Limit 1 | Limit 2 | df per node | Max difference between nodes |
+|---|---|---|---|---|
+| Current: Seg2 2, SJW 1 | 0.31% / 0.33% | 0.49% / 0.52% | 0.31% | 0.62% |
+| Seg2 2, SJW 2 | 0.63% / 0.67% | 0.49% / 0.52% | 0.49% | 0.97% |
+| Seg2 4, SJW 4 (H723 Seg1 11, F429 Seg1 10; sample point about 75%) | 1.25% / 1.33% | 0.98% / 1.05% | 0.98% | 1.96% |
+
+SJW 1 assumed both boards' HSE clocks are crystal-accurate (around 0.005%), which leaves a lot of margin. That turned out not to hold for the H723: see the open issue in step 7. Raising SJW to 2 adds margin without moving the sample point. Going further means a larger Seg2, so an earlier sample point, which leaves less margin for signal delay on long cables (not an issue on a bench bus), and in real networks all nodes are usually set to an agreed sample point.
 
 #### Settings
 
@@ -376,7 +391,7 @@ The cause showed up in the frame counts. Both boards send once per `HAL_Delay(50
 | F429 | 240,106 | +0.00% |
 | H723 | 243,051 | **+1.23%** |
 
-The H723's clock registers are as configured (HSE bypass → PLL1 ÷2 ×200; FDCANSEL = PLL1Q), so the error is in the HSE input itself: about 8.098 MHz instead of 8.000. On this board HSE comes from the on-board STLINK-V3's clock output, not a crystal next to the H723. Every H723 clock inherits the error, so its FDCAN clock is about 80.98 MHz and it sends at about 506 kbps instead of 500. With SJW 1 tq the nodes tolerate only about 0.3% mismatch, so frames survive or fail depending on their bit pattern: payloads with long runs of equal bits give the receiver fewer edges to resynchronize on. That fits the bursts, as the counter in the payload moves through different bit patterns. Why the errors show up only on H723 → F429 frames and not the other way is not explained yet.
+The H723's clock registers are as configured (HSE bypass → PLL1 ÷2 ×200; FDCANSEL = PLL1Q), so the error is in the HSE input itself: about 8.098 MHz instead of 8.000. On this board HSE comes from the on-board STLINK-V3's clock output, not a crystal next to the H723. Every H723 clock inherits the error, so its FDCAN clock is about 80.98 MHz and it sends at about 506 kbps instead of 500. With SJW 1 tq the two nodes' clocks may differ by at most 0.62% (see Clock tolerance under SJW, above), so frames survive or fail depending on their bit pattern: payloads with long runs of equal bits give the receiver fewer edges to resynchronize on. That fits the bursts, as the counter in the payload moves through different bit patterns. Why the errors show up only on H723 → F429 frames and not the other way is not explained yet.
 
 **Workaround: trim the H723's PLL.** `HSE_VALUE` in `h723/Inc/stm32h7xx_hal_conf.h` is set to the measured 8,098,123 Hz, so the HAL's clock calculations match the real input, and PLL1 uses N = 197 plus a fractional part (`PLLFRACN` = 4724, in steps of 1/8192: the H7's PLL can multiply by a non-whole number) instead of N = 200. That puts the VCO back at 800 MHz, so the CPU runs at 400 MHz and FDCAN at 80 MHz. Read back over SWD: PLL1 N 197, FRACN 4724, fractional mode on.
 
@@ -388,7 +403,7 @@ Result over 25 minutes:
 | Bus errors | 2 to 32 per 5 minutes | **0** in 25 minutes on both boards |
 | Frames lost or bad | 0 | 0 (about 3,000 each way) |
 
-**The trim is not a fix.** The H723's offset kept moving during the run: averaged since the start it went −0.050%, −0.054%, −0.058%, −0.069%, with about −0.10% in the last 5 minutes alone, while the F429 stayed within 0.001% of wall time. So the STLINK-V3's clock output drifts. That fits an internal RC oscillator rather than a crystal, but this hasn't been confirmed against ST's documentation. CAN tolerates about 0.3% here, so if the drift continues the errors will return. The proper fix is an accurate clock for the H723: an HSE crystal on the board (see ST's UM2407 user manual for the solder bridges and parts), or an external clock source. Re-measure the offset if errors reappear.
+**The trim is not a fix.** The H723's offset kept moving during the run: averaged since the start it went −0.050%, −0.054%, −0.058%, −0.069%, with about −0.10% in the last 5 minutes alone, while the F429 stayed within 0.001% of wall time. So the STLINK-V3's clock output drifts. That fits an internal RC oscillator rather than a crystal, but this hasn't been confirmed against ST's documentation. The two clocks may differ by at most 0.62% at the current settings, so if the drift continues the errors will return. The proper fix is an accurate clock for the H723: an HSE crystal on the board (see ST's UM2407 user manual for the solder bridges and parts), or an external clock source. Re-measure the offset if errors reappear.
 
 #### Step 8: Periodic sensor frames
 

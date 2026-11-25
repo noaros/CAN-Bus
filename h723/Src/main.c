@@ -1,49 +1,64 @@
 /*
- * NUCLEO-H723ZG: FDCAN loopback test (bring-up step 5).
+ * NUCLEO-H723ZG: first exchange with the F429 over the real bus
+ * (bring-up step 6).
  *
- * FDCAN1 runs classic CAN at 500 kbps in external loopback mode: every
- * transmitted frame is fed back to the controller's own receiver, so the
- * FDCAN setup (kernel clock, bit timing, message RAM, filter, RX interrupt)
- * is tested without the other board. Same test as the F429's step 3.
+ * FDCAN1 runs classic CAN at 500 kbps in normal mode. Every 500 ms it sends
+ * ID 0x200 (P1_ID_H723) with an incrementing counter, and it receives the
+ * F429's ID 0x100 frames, checking the ID, DLC, pattern and that the
+ * counter goes up by exactly 1. Frame layout is shared with the F429 in
+ * common/project1_frames.h.
  *
- * Every 500 ms a frame with ID 0x123 and an incrementing counter is sent.
- * The RX interrupt checks that the received frame matches what was sent.
- *
- *   LD2 (yellow, PE1)  toggles on every frame sent
- *   LD1 (green, PB0)   toggles on every frame received that matches
- *   LD3 (red, PB14)    on for good after a mismatch, a CAN error or a
- *                      failed HAL call
+ *   LD2 (yellow, PE1)  toggles on every frame queued for sending
+ *   LD1 (green, PB0)   toggles on every good frame from the F429
+ *   LD3 (red, PB14)    on while there is a problem: error passive or
+ *                      bus-off, or no good frame from the F429 in the last
+ *                      1.5 s. Goes off again by itself once the bus recovers.
  *
  * Working: yellow and green both blink at 1 Hz, red stays off.
  *
- * For checking over SWD: clk_sys_hz and clk_fdcan_hz hold the clock
- * frequencies the HAL computes from the RCC registers; tx_count and
- * rx_ok_count count frames sent and frames received that matched.
+ * Errors don't stop the program here, unlike step 5: on a real bus they are
+ * expected while the other board is missing, and CAN recovers by itself
+ * once it returns (after bus-off, FDCAN needs software to restart it, which
+ * update_bus_status() does). Only a failed HAL setup call stops everything.
+ *
+ * For checking over SWD: clk_sys_hz, clk_fdcan_hz, tx_count, tx_skipped,
+ * rx (p1_rx_stats_t), rx_lost_fifo, bus_off_recoveries and bus (error
+ * counters and state, refreshed every 500 ms).
  */
 #include "stm32h7xx_hal.h"
+#include "project1_frames.h"
 
 #define LED_GREEN   GPIO_PIN_0    /* LD1, PB0 */
 #define LED_RED     GPIO_PIN_14   /* LD3, PB14 */
 #define LED_YELLOW  GPIO_PIN_1    /* LD2, PE1 */
 
-#define TEST_ID     0x123U
-#define TEST_DLC    8U
+#define RX_TIMEOUT_MS  1500U
 
 FDCAN_HandleTypeDef hfdcan1;
 
 volatile uint32_t clk_sys_hz;
 volatile uint32_t clk_fdcan_hz;
 
-/* Last frame sent, compared against what comes back. Written in main,
- * read in the RX interrupt. */
-volatile uint32_t tx_count;
-volatile uint32_t rx_ok_count;
+volatile uint32_t tx_count;           /* frames queued for sending */
+volatile uint32_t tx_skipped;         /* sends skipped because the TX queue was full */
+volatile p1_rx_stats_t rx;            /* frames received from the F429 */
+volatile uint32_t rx_lost_fifo;       /* Rx FIFO 0 message lost: it was full */
+volatile uint32_t bus_off_recoveries; /* restarts after bus-off */
+
+/* Snapshot of FDCAN1's error counters (ECR) and protocol status (PSR) */
+volatile struct {
+    uint32_t tec;           /* transmit error counter */
+    uint32_t rec;           /* receive error counter */
+    uint32_t lec;           /* last error code: 0 none, 3 ACK, 7 no change (see README) */
+    uint32_t error_passive;
+    uint32_t bus_off;
+} bus;
 
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void FDCAN1_Init(void);
 static void FDCAN1_FilterAcceptAll(void);
-static void fill_payload(uint8_t data[8], uint32_t count);
+static void update_bus_status(void);
 void Error_Handler(void);
 
 int main(void)
@@ -59,9 +74,7 @@ int main(void)
     FDCAN1_FilterAcceptAll();
 
     if (HAL_FDCAN_ActivateNotification(&hfdcan1,
-            FDCAN_IT_RX_FIFO0_NEW_MESSAGE | FDCAN_IT_RX_FIFO0_MESSAGE_LOST |
-            FDCAN_IT_ARB_PROTOCOL_ERROR | FDCAN_IT_ERROR_WARNING |
-            FDCAN_IT_ERROR_PASSIVE | FDCAN_IT_BUS_OFF, 0) != HAL_OK) {
+            FDCAN_IT_RX_FIFO0_NEW_MESSAGE | FDCAN_IT_RX_FIFO0_MESSAGE_LOST, 0) != HAL_OK) {
         Error_Handler();
     }
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
@@ -69,7 +82,7 @@ int main(void)
     }
 
     FDCAN_TxHeaderTypeDef tx = {
-        .Identifier          = TEST_ID,
+        .Identifier          = P1_ID_H723,
         .IdType              = FDCAN_STANDARD_ID,
         .TxFrameType         = FDCAN_DATA_FRAME,
         .DataLength          = FDCAN_DLC_BYTES_8,
@@ -83,15 +96,18 @@ int main(void)
 
     while (1) {
         HAL_Delay(500);
+        update_bus_status();
 
-        /* With one frame every 500 ms the TX FIFO is never full; if it is,
-         * the previous frames never left, which is itself the fault. */
+        /* The queue fills while no node acknowledges (the controller keeps
+         * retrying). Skip rather than stop; sending resumes once the F429
+         * is back. */
         if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0) {
-            Error_Handler();
+            tx_skipped++;
+            continue;
         }
 
         tx_count++;
-        fill_payload(data, tx_count);
+        p1_fill_payload(data, tx_count);
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx, data) != HAL_OK) {
             Error_Handler();
         }
@@ -99,67 +115,62 @@ int main(void)
     }
 }
 
-/* Payload: counter in bytes 0-3 (little-endian), fixed pattern in 4-7.
- * Same as the F429. */
-static void fill_payload(uint8_t data[8], uint32_t count)
+/* Refresh the bus snapshot, restart after bus-off, and set the red LED */
+static void update_bus_status(void)
 {
-    data[0] = (uint8_t)(count);
-    data[1] = (uint8_t)(count >> 8);
-    data[2] = (uint8_t)(count >> 16);
-    data[3] = (uint8_t)(count >> 24);
-    data[4] = 0xCA;
-    data[5] = 0xFE;
-    data[6] = 0xBA;
-    data[7] = 0xBE;
+    FDCAN_ProtocolStatusTypeDef ps;
+    FDCAN_ErrorCountersTypeDef ec;
+
+    if (HAL_FDCAN_GetProtocolStatus(&hfdcan1, &ps) != HAL_OK ||
+        HAL_FDCAN_GetErrorCounters(&hfdcan1, &ec) != HAL_OK) {
+        Error_Handler();
+    }
+    bus.tec           = ec.TxErrorCnt;
+    bus.rec           = ec.RxErrorCnt;
+    bus.lec           = ps.LastErrorCode;
+    bus.error_passive = ps.ErrorPassive;
+    bus.bus_off       = ps.BusOff;
+
+    /* Bus-off sets CCCR.INIT, which stops FDCAN. Clearing it starts the
+     * standard recovery (wait for 128 x 11 recessive bits), then the node
+     * rejoins the bus. bxCAN does this itself with AutoBusOff. */
+    if (ps.BusOff && (hfdcan1.Instance->CCCR & FDCAN_CCCR_INIT)) {
+        CLEAR_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
+        bus_off_recoveries++;
+    }
+
+    int quiet = rx.ok == 0 || (HAL_GetTick() - rx.last_ok_tick) > RX_TIMEOUT_MS;
+    int problem = bus.error_passive || bus.bus_off || quiet;
+    HAL_GPIO_WritePin(GPIOB, LED_RED, problem ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 /* Called from HAL_FDCAN_IRQHandler for Rx FIFO 0 events */
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
     if (RxFifo0ITs & FDCAN_IT_RX_FIFO0_MESSAGE_LOST) {
-        Error_Handler();
+        rx_lost_fifo++;
     }
     if (!(RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE)) {
         return;
     }
 
-    FDCAN_RxHeaderTypeDef rx;
+    FDCAN_RxHeaderTypeDef h;
     uint8_t data[8];
-    uint8_t expected[8];
 
-    if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &rx, data) != HAL_OK) {
+    if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &h, data) != HAL_OK) {
         Error_Handler();
     }
 
-    fill_payload(expected, tx_count);
-    int ok = rx.IdType == FDCAN_STANDARD_ID && rx.Identifier == TEST_ID &&
-             rx.RxFrameType == FDCAN_DATA_FRAME &&
-             rx.FDFormat == FDCAN_CLASSIC_CAN && rx.DataLength == TEST_DLC;
-    for (uint32_t i = 0; ok && i < TEST_DLC; i++) {
-        ok = data[i] == expected[i];
+    int ok = h.IdType == FDCAN_STANDARD_ID && h.Identifier == P1_ID_F429 &&
+             h.RxFrameType == FDCAN_DATA_FRAME &&
+             h.FDFormat == FDCAN_CLASSIC_CAN && h.DataLength == P1_DLC &&
+             p1_payload_pattern_ok(data);
+    if (!ok) {
+        rx.bad++;
+        return;
     }
-
-    if (ok) {
-        rx_ok_count++;
-        HAL_GPIO_TogglePin(GPIOB, LED_GREEN);
-    } else {
-        Error_Handler();
-    }
-}
-
-/* Error warning, error passive or bus-off status changed */
-void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorStatusITs)
-{
-    (void)hfdcan;
-    (void)ErrorStatusITs;
-    Error_Handler();
-}
-
-/* Protocol error, message RAM access failure, etc. (hfdcan1.ErrorCode) */
-void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
-{
-    (void)hfdcan;
-    Error_Handler();
+    p1_rx_count(&rx, p1_payload_count(data), HAL_GetTick());
+    HAL_GPIO_TogglePin(GPIOB, LED_GREEN);
 }
 
 /*
@@ -172,7 +183,7 @@ static void FDCAN1_Init(void)
 {
     hfdcan1.Instance                  = FDCAN1;
     hfdcan1.Init.FrameFormat          = FDCAN_FRAME_CLASSIC;
-    hfdcan1.Init.Mode                 = FDCAN_MODE_EXTERNAL_LOOPBACK;
+    hfdcan1.Init.Mode                 = FDCAN_MODE_NORMAL;
     hfdcan1.Init.AutoRetransmission   = ENABLE;
     hfdcan1.Init.TransmitPause        = DISABLE;
     hfdcan1.Init.ProtocolException    = DISABLE;
@@ -212,7 +223,7 @@ static void FDCAN1_Init(void)
  * into Rx FIFO 0 by default. Set it to reject them, so frames only get in
  * through the configured filter, as on the F429. That filter is a classic
  * ID/mask filter with mask 0: no ID bits compared, every standard ID
- * accepted. Narrowed to Project 1's IDs once the bus works.
+ * accepted. Narrowed to the F429's ID in a later step, once the bus works.
  */
 static void FDCAN1_FilterAcceptAll(void)
 {
@@ -336,7 +347,7 @@ static void LED_Init(void)
     HAL_GPIO_Init(GPIOE, &gpio);
 }
 
-/* Red LED on, everything stopped. Inspect hfdcan1.ErrorCode in a debugger. */
+/* A HAL setup or read call failed: red LED on, everything stopped. */
 void Error_Handler(void)
 {
     __disable_irq();

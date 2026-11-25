@@ -283,3 +283,49 @@ Verified on hardware: flashed with `make flash`. Read over SWD while running, `t
 | ECR (error counter register) | `0x0` | Transmit and receive error counters 0 |
 | PSR (protocol status register: last error code, error warning, error passive, bus-off) | `0x708` | No errors, idle between frames, not error warning, error passive or bus-off |
 | GFC (global filter configuration) | `0x2B` | Non-matching standard, extended and remote frames rejected |
+
+#### Step 6: First exchange over the real bus
+
+Both boards switch from loopback to normal mode, so frames now go through the transceivers, the CANH/CANL wires and the terminators, and each board must understand the other's bit timing. This is the first test of the wiring and of the two different clock setups working together.
+
+Each board sends one frame every 500 ms and checks the other's:
+
+| | Sends ID | Receives ID |
+|---|---|---|
+| F429 | `0x100` | `0x200` |
+| H723 | `0x200` | `0x100` |
+
+The IDs and payload layout live in `common/project1_frames.h`, which both builds include, so the boards can't disagree about them. The payload is the same as before: a counter in bytes 0–3 and `CA FE BA BE` in bytes 4–7. A received frame can't be compared with one just sent any more, since it comes from the other board. Instead the receiver checks the ID, DLC and pattern, and that the counter goes up by exactly 1, which shows lost frames.
+
+**Errors no longer stop the program.** On a real bus some errors are normal. While one board is missing or still starting up, nobody sends the ACK (acknowledge: the bit every receiving node sets to confirm it got a frame). The sender then gets an ACK error on every attempt and keeps retrying, and its TEC (transmit error counter) rises by 8 each time until it reaches error passive (TEC or REC at 128 or more: the node still works but signals errors less forcefully). Once the other board is back, each successful frame takes 1 off the counter, and the node returns to normal by itself. Halting on the first error, as steps 3 and 5 did, would stop a board just because the other was flashed second. So now:
+
+- Bus errors are polled every 500 ms and kept in `bus` (TEC, REC, last error code, error passive, bus-off) for reading over SWD
+- If a board reaches bus-off (TEC above 255: the node disconnects itself from the bus), it rejoins after the bus has been idle for 128 × 11 bits. bxCAN does this by itself (`AutoBusOff`); FDCAN needs software to clear `CCCR.INIT`, which `update_bus_status()` does
+- When the TX mailboxes (F429) or TX queue (H723) are full because nobody acknowledges, sends are skipped and counted in `tx_skipped`
+- Only a failed HAL setup call still stops everything
+
+The filters stay accept-all. Narrowing them is a separate step, so a failure here points at the bus.
+
+| LED | F429 | H723 | Meaning |
+|---|---|---|---|
+| TX | LD2 blue | LD2 yellow | Toggles on every frame queued for sending |
+| RX | LD1 green | LD1 green | Toggles on every good frame from the other board |
+| Problem | LD3 red | LD3 red | On while error passive or bus-off, or no good frame from the other board in the last 1.5 s. Goes off by itself once the bus recovers |
+
+Done when both boards' TX and green LEDs blink at 1 Hz, red stays off, each board's `rx.ok` matches the other's `tx_count`, and `rx.lost`, `rx.bad` and the error counters stay at 0.
+
+Verified on hardware: flashed both with `make flash`, then read both over SWD:
+
+| | F429 | H723 |
+|---|---|---|
+| Frames sent (`tx_count`) | 177 | 181 |
+| Good frames from the other board (`rx.ok`) | 180 | 177 |
+| Lost / restarts | 0 / 0 | 0 / 0 |
+| TEC / REC | 0 / 0 | 0 / 0 |
+| Error passive / bus-off | no / no | no / no |
+| Red LED | off | off |
+
+The H723 received exactly the 177 frames the F429 sent. The F429 shows 180 of 181 because it was read first, and the H723 sent one more before it was read. Two leftovers from the flashing order, both expected:
+
+- The H723 counted 1 bad frame: between the two flashes, the F429 was still running its step 3 loopback firmware, which drives TX and sent one `0x123` frame. Step 6 doesn't expect that ID
+- The H723's TEC was 112 right after both were flashed: during that same window nobody acknowledged its frames, since a node in loopback mode ignores the bus. It fell by 1 per frame and reached 0 within about a minute

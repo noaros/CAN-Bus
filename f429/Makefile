@@ -31,7 +31,7 @@ C_SRCS := \
 
 ASM_SRCS := $(DEV)/Source/Templates/gcc/startup_stm32f429xx.s
 
-INCLUDES := -IInc -I$(HAL)/Inc -I$(DEV)/Include -I$(LIB)/cmsis_core/Include
+INCLUDES := -IInc -I../common -I$(HAL)/Inc -I$(DEV)/Include -I$(LIB)/cmsis_core/Include
 DEFINES  := -DSTM32F429xx -DUSE_HAL_DRIVER
 LDSCRIPT := STM32F429ZITx_FLASH.ld
 

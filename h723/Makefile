@@ -31,7 +31,7 @@ C_SRCS := \
 
 ASM_SRCS := $(DEV)/Source/Templates/gcc/startup_stm32h723xx.s
 
-INCLUDES := -IInc -I$(HAL)/Inc -I$(DEV)/Include -I$(LIB)/cmsis_core/Include
+INCLUDES := -IInc -I../common -I$(HAL)/Inc -I$(DEV)/Include -I$(LIB)/cmsis_core/Include
 DEFINES  := -DSTM32H723xx -DUSE_HAL_DRIVER -DUSE_PWR_LDO_SUPPLY
 LDSCRIPT := STM32H723ZGTx_FLASH.ld
 

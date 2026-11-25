@@ -200,7 +200,8 @@ void HAL_CAN_MspInit(CAN_HandleTypeDef *hcan)
 }
 
 /*
- * HSE 8 MHz (ST-LINK MCO, bypass) -> PLL: /M=4 x N=180 /P=2 = 180 MHz SYSCLK.
+ * HSE 8 MHz (ST-LINK MCO, bypass) -> PLL: /M=4 = 2 MHz x N=180 = 360 MHz VCO
+ *   P /2 = 180 MHz SYSCLK.
  * AHB = 180 MHz, APB1 = /4 = 45 MHz (bxCAN clock), APB2 = /2 = 90 MHz.
  */
 static void SystemClock_Config(void)

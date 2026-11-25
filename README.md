@@ -223,7 +223,7 @@ The same as step 2, for the NUCLEO-H723ZG. Two more submodules, pinned like the 
 
 `h723/` mirrors `f429/`: a Makefile, a linker script, a HAL config that enables only the modules in use, and a minimal `main.c` that sets the clocks and blinks LD1.
 
-Clocks, from the 8 MHz ST-LINK clock (HSE bypass) through PLL1 (/2 × 200 = 800 MHz VCO):
+Clocks, from the 8 MHz ST-LINK clock (HSE bypass) through PLL1: 8 MHz ÷ 2 (M) = 4 MHz, × 200 (N) = 800 MHz VCO.
 
 | Output | Divider | Frequency | Used for |
 |---|---|---|---|

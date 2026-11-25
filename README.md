@@ -185,3 +185,29 @@ make flash
 ```
 
 `make flash` uses `STM32_Programmer_CLI` over the ST-LINK. Requires `arm-none-eabi-gcc`, GNU Make and STM32CubeProgrammer.
+
+#### Step 3: F429 bxCAN in loopback
+
+Tests the F429's CAN setup on its own, before the H723 is involved. In loopback mode the controller feeds every transmitted frame back to its own receiver, so a failure here is in the F429 code, not the wiring or the other board.
+
+What it adds to `f429/Src/main.c`:
+
+| Part | Setting | Why |
+|---|---|---|
+| CAN1 init | Prescaler 6, BS1 12 tq, BS2 2 tq, SJW 1 tq | 500 kbps from the 45 MHz APB1 clock (see Settings above) |
+| Mode | `CAN_MODE_LOOPBACK` | Frames come back without a second node, and missing ACKs are ignored. TX is still driven on PD1, so frames are visible on a scope |
+| Filter | Bank 0, 32-bit mask mode, mask 0 → FIFO0 | bxCAN discards all received frames until a filter is active. Mask 0 accepts every ID, so the filter can't be the cause if nothing arrives. Narrowed once the bus works |
+| RX | FIFO0 message pending interrupt | Project 1 uses interrupt-driven RX. The callback checks the ID, DLC and payload against the frame just sent |
+| Errors | Error, bus-off and last-error-code interrupts | Any CAN error stops the test with the red LED on |
+
+Every 500 ms it sends ID `0x123` with 8 bytes: a counter in bytes 0–3 and `CA FE BA BE` in bytes 4–7.
+
+| LED | Meaning |
+|---|---|
+| LD2 blue | Toggles on every frame sent |
+| LD1 green | Toggles on every matching frame received |
+| LD3 red | On for good after a mismatch, CAN error or failed HAL call (`hcan1.ErrorCode` says which) |
+
+Done when blue and green both blink at 1 Hz and red stays off. If blue blinks but green doesn't, the frame is sent but not received, so check the filter and RX interrupt first.
+
+Verified on hardware: flashed with `make flash`. Read over SWD while running, the TX counter rose by one every 500 ms, the green and blue LEDs toggled together with red off, CAN1's error register (ESR) read 0 (no errors, both error counters 0), and BTR read `0x401B0005` (loopback on, BRP 6, BS1 12 tq, BS2 2 tq, SJW 1 tq).

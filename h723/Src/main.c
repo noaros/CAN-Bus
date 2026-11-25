@@ -310,7 +310,10 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef *hfdcan)
 }
 
 /*
- * HSE 8 MHz (ST-LINK MCO, bypass) -> PLL1: /M=2 = 4 MHz x N=200 = 800 MHz VCO
+ * HSE (ST-LINK MCO, bypass), measured 8.098123 MHz instead of the nominal 8
+ * (see HSE_VALUE) -> PLL1: /M=2 = 4.04906 MHz x (N=197 + FRACN 4724/8192
+ * = 197.5767) = 800.000 MHz VCO. The fractional part cancels the HSE error;
+ * with an exact 8 MHz HSE it would be N=200, FRACN=0.
  *   P /2 = 400 MHz SYSCLK (CPU)
  *   Q /10 = 80 MHz -> FDCAN kernel clock (sets the CAN bit timing)
  *   R /2 = 400 MHz (unused)
@@ -336,13 +339,13 @@ static void SystemClock_Config(void)
     osc.PLL.PLLState    = RCC_PLL_ON;
     osc.PLL.PLLSource   = RCC_PLLSOURCE_HSE;
     osc.PLL.PLLM        = 2;
-    osc.PLL.PLLN        = 200;
+    osc.PLL.PLLN        = 197;
     osc.PLL.PLLP        = 2;
     osc.PLL.PLLQ        = 10;
     osc.PLL.PLLR        = 2;
     osc.PLL.PLLRGE      = RCC_PLL1VCIRANGE_2;   /* 4 MHz PLL input: 4-8 MHz range */
     osc.PLL.PLLVCOSEL   = RCC_PLL1VCOWIDE;      /* 800 MHz VCO: wide range */
-    osc.PLL.PLLFRACN    = 0;
+    osc.PLL.PLLFRACN    = 4724;               /* trims the fast HSE: see above */
     if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
         Error_Handler();
     }

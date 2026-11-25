@@ -378,4 +378,14 @@ The cause showed up in the frame counts. Both boards send once per `HAL_Delay(50
 
 The H723's clock registers are as configured (HSE bypass → PLL1 ÷2 ×200; FDCANSEL = PLL1Q), so the error is in the HSE input itself: about 8.098 MHz instead of 8.000. On this board HSE comes from the on-board STLINK-V3's clock output, not a crystal next to the H723. Every H723 clock inherits the error, so its FDCAN clock is about 80.98 MHz and it sends at about 506 kbps instead of 500. With SJW 1 tq the nodes tolerate only about 0.3% mismatch, so frames survive or fail depending on their bit pattern: payloads with long runs of equal bits give the receiver fewer edges to resynchronize on. That fits the bursts, as the counter in the payload moves through different bit patterns. Why the errors show up only on H723 → F429 frames and not the other way is not explained yet.
 
-Still to decide: how to give the H723 an accurate clock.
+**Workaround: trim the H723's PLL.** `HSE_VALUE` in `h723/Inc/stm32h7xx_hal_conf.h` is set to the measured 8,098,123 Hz, so the HAL's clock calculations match the real input, and PLL1 uses N = 197 plus a fractional part (`PLLFRACN` = 4724, in steps of 1/8192: the H7's PLL can multiply by a non-whole number) instead of N = 200. That puts the VCO back at 800 MHz, so the CPU runs at 400 MHz and FDCAN at 80 MHz. Read back over SWD: PLL1 N 197, FRACN 4724, fractional mode on.
+
+Result over 25 minutes:
+
+| | Before trim | After trim |
+|---|---|---|
+| H723 clock vs F429 | +1.23% | −0.05% to −0.10% |
+| Bus errors | 2 to 32 per 5 minutes | **0** in 25 minutes on both boards |
+| Frames lost or bad | 0 | 0 (about 3,000 each way) |
+
+**The trim is not a fix.** The H723's offset kept moving during the run: averaged since the start it went −0.050%, −0.054%, −0.058%, −0.069%, with about −0.10% in the last 5 minutes alone, while the F429 stayed within 0.001% of wall time. So the STLINK-V3's clock output drifts. That fits an internal RC oscillator rather than a crystal, but this hasn't been confirmed against ST's documentation. CAN tolerates about 0.3% here, so if the drift continues the errors will return. The proper fix is an accurate clock for the H723: an HSE crystal on the board (see ST's UM2407 user manual for the solder bridges and parts), or an external clock source. Re-measure the offset if errors reappear.

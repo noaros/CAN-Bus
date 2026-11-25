@@ -105,7 +105,12 @@
   *        (when HSE is used as system clock source, directly or through the PLL).
   */
 #if !defined  (HSE_VALUE)
-#define HSE_VALUE    (8000000UL)  /*!< NUCLEO-H723ZG: 8 MHz from ST-LINK MCO */
+/* NUCLEO-H723ZG: nominally 8 MHz from the STLINK-V3's clock output, but this
+ * board's measures 1.23% fast (see README, step 7). Set to the measured value
+ * so the HAL's clock calculations (SysTick, HAL_RCC_GetSysClockFreq) match
+ * reality, and SystemClock_Config trims the PLL to compensate. Re-measure if
+ * the board or its ST-LINK changes. */
+#define HSE_VALUE    (8098123UL)
 #endif /* HSE_VALUE */
 
 #if !defined  (HSE_STARTUP_TIMEOUT)

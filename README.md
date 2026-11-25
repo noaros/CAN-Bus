@@ -273,4 +273,13 @@ It sends the same frame as the F429: ID `0x123`, 8 bytes, a counter in bytes 0â€
 
 For checking over SWD, `tx_count` and `rx_ok_count` count frames sent and frames received that matched. Done when yellow and green both blink at 1 Hz, red stays off, and `rx_ok_count` keeps up with `tx_count`.
 
-Builds (16 KB flash, 1.8 KB RAM). Not yet verified on hardware.
+Verified on hardware: flashed with `make flash`. Read over SWD while running, `tx_count` and `rx_ok_count` stayed equal (17/17, then 23/23 three seconds later), the green and yellow LEDs toggled with red off, and the FDCAN registers matched the setup:
+
+| Register | Read | Meaning |
+|---|---|---|
+| CCCR (CC control register: operating mode switches) | `0x1080` | Running (INIT 0), test mode on, not silent (MON 0), classic CAN only (FDOE 0), automatic retransmission on (DAR 0) |
+| TEST (test register: loopback and TX/RX pin control) | `0x90` | Loopback on (LBCK 1); RX pin reads recessive |
+| NBTP (nominal bit timing and prescaler, FDCAN's BTR; each field stored as value âˆ’ 1) | `0x00090C01` | Prescaler 10, Seg1 13 tq, Seg2 2 tq, SJW 1 tq |
+| ECR (error counter register) | `0x0` | Transmit and receive error counters 0 |
+| PSR (protocol status register: last error code, error warning, error passive, bus-off) | `0x708` | No errors, idle between frames, not error warning, error passive or bus-off |
+| GFC (global filter configuration) | `0x2B` | Non-matching standard, extended and remote frames rejected |

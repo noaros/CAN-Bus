@@ -210,7 +210,7 @@ Every 500 ms it sends ID `0x123` with 8 bytes: a counter in bytes 0–3 and `CA 
 
 Done when blue and green both blink at 1 Hz and red stays off. If blue blinks but green doesn't, the frame is sent but not received, so check the filter and RX interrupt first.
 
-Verified on hardware: flashed with `make flash`. Read over SWD while running, the TX counter rose by one every 500 ms, the green and blue LEDs toggled together with red off, CAN1's error register (ESR) read 0 (no errors, both error counters 0), and BTR read `0x401B0005` (loopback on, BRP 6, BS1 12 tq, BS2 2 tq, SJW 1 tq).
+Verified on hardware: flashed with `make flash`. Read over SWD while running, the TX counter rose by one every 500 ms, the green and blue LEDs toggled together with red off, CAN1's error status register (ESR: the transmit and receive error counters, the last error code and the bus-off flag) read 0 (no errors, both error counters 0), and its bit timing register (BTR: the prescaler, Seg1, Seg2 and SJW, each stored as value − 1, plus the loopback and silent mode bits) read `0x401B0005` (loopback on, prescaler 6, BS1 12 tq, BS2 2 tq, SJW 1 tq).
 
 #### Step 4: H723 HAL libraries and build setup
 

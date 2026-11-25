@@ -239,7 +239,7 @@ H7 differences from the F429 setup:
 
 To check the clocks without a scope, `main.c` stores the frequencies the HAL computes from the RCC registers in `clk_sys_hz` and `clk_fdcan_hz`, readable over SWD. Done when LD1 blinks at 1 Hz, `clk_sys_hz` is 400000000 and `clk_fdcan_hz` is 80000000.
 
-Verified on hardware: flashed with `make flash`, and LD1 blinks at 1 Hz with LD3 off. Read over SWD: `clk_sys_hz` = 400000000, `clk_fdcan_hz` = 80000000, FDCANSEL = `01` (PLL1Q), and the HAL tick advanced 5102 ms over about 5.1 s of wall time, so the 400 MHz SysTick timing is right.
+Verified on hardware: flashed with `make flash`, and LD1 blinks at 1 Hz with LD3 off. Read over SWD: `clk_sys_hz` = 400000000, `clk_fdcan_hz` = 80000000, FDCANSEL = `01` (PLL1Q), and the HAL tick (`uwTick`: the millisecond counter behind `HAL_Delay()`, incremented by the SysTick interrupt, which fires every 400,000 CPU cycles) advanced 5102 over a 5 s wait plus read time (roughly 5.1 s of wall time: real elapsed time). So the CPU runs at about the 400 MHz the HAL assumes. This is a coarse check, accurate to a few percent; it rules out a wrong clock source or divider, and the exact CAN clock is confirmed by `clk_fdcan_hz`.
 
 ```bash
 cd h723

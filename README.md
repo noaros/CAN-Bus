@@ -233,7 +233,7 @@ Clocks, from the 8 MHz ST-LINK clock (HSE bypass) through PLL1: 8 MHz ÷ 2 (M) =
 
 H7 differences from the F429 setup:
 
-- **Power supply:** the H723 has no SMPS, so the core runs from the internal LDO (`HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY)`, and `USE_PWR_LDO_SUPPLY` for the startup code)
+- **Power supply:** the H723 has no SMPS (switched-mode power supply: an on-chip regulator that switches rapidly to step the voltage down efficiently, found on some H7 parts), so the core runs from the internal LDO (low-dropout regulator: a simpler linear regulator that burns the excess voltage as heat) (`HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY)`, and `USE_PWR_LDO_SUPPLY` for the startup code)
 - **Voltage scale 0:** allows up to 550 MHz, so 400 MHz has margin. Flash needs 2 wait states at 200 MHz AXI
 - **RAM:** data, heap and stack go in the 128 KB DTCM at `0x20000000`, the fastest RAM for the CPU. DMA can't reach DTCM, which doesn't matter here because FDCAN uses its own message RAM
 

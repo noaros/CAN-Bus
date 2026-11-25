@@ -1,17 +1,14 @@
 /*
- * NUCLEO-F429ZI: exchange with the H723 over the real bus, with hardware
- * acceptance filtering (bring-up step 7).
+ * NUCLEO-F429ZI: periodic sensor frames to the H723 (bring-up step 8).
  *
- * CAN1 runs at 500 kbps in normal mode. Every 500 ms it sends ID 0x100
- * (P1_ID_F429) with an incrementing counter, and it receives the H723's
- * ID 0x200 frames, checking the ID, DLC, pattern and that the counter goes
- * up by exactly 1. Frame layout is shared with the H723 in
+ * CAN1 runs at 500 kbps in normal mode. Every 500 ms it reads the chip's
+ * internal temperature sensor and VREFINT with ADC1, and sends ID 0x100
+ * (P1_ID_F429) with a counter, the temperature and VDDA. It receives the
+ * H723's ID 0x200 frames, checking the ID, DLC, that the sensor values are
+ * plausible and that the counter goes up by exactly 1. The hardware filter
+ * accepts only ID 0x200 (`make FILTER=all` for the accept-all control).
+ * Frame layout and sensor conversion are shared with the H723 in
  * common/project1_frames.h.
- *
- * The filter accepts only ID 0x200. To test it, each board also sends a
- * decoy (here 0x101) that the other board's filter must drop in hardware;
- * a decoy reaching software would be counted in rx.bad. Build with
- * `make FILTER=all` for the accept-all control, where decoys do get through.
  *
  *   LD2 (blue, PB7)   toggles on every frame queued for sending
  *   LD1 (green, PB0)  toggles on every good frame from the H723
@@ -21,16 +18,16 @@
  *
  * Working: blue and green both blink at 1 Hz, red stays off.
  *
- * Errors don't stop the program here, unlike step 3: on a real bus they are
- * expected while the other board is missing (no one acknowledges, so the
- * error counters rise to error passive), and CAN recovers by itself once it
- * returns. Only a failed HAL setup call stops everything (red on, others off).
+ * Bus errors don't stop the program: they are expected while the other
+ * board is missing, and CAN recovers by itself. Only a failed HAL setup
+ * call stops everything (red on, others off).
  *
- * For checking over SWD: tx_count, tx_skipped, decoy_count, rx
- * (p1_rx_stats_t), rx_overruns and bus (error counters and state,
- * refreshed every 500 ms).
+ * For checking over SWD: local (own sensor readings), tx_count, tx_skipped,
+ * rx (p1_rx_stats_t, including the H723's last sensor values), rx_overruns,
+ * errs (bus errors by type) and bus (error counters and state).
  */
 #include "stm32f4xx_hal.h"
+#include "stm32f4xx_ll_adc.h"
 #include "project1_frames.h"
 
 #define LED_GREEN   GPIO_PIN_0
@@ -38,15 +35,24 @@
 #define LED_RED     GPIO_PIN_14
 
 #define RX_TIMEOUT_MS  1500U
+#define ADC_SAMPLES    16U      /* readings averaged per sensor */
 
 CAN_HandleTypeDef hcan1;
+ADC_HandleTypeDef hadc1;
 
 volatile uint32_t tx_count;     /* frames queued for sending */
-volatile uint32_t tx_skipped;   /* sends skipped because fewer than 2 mailboxes were free */
-volatile uint32_t decoy_count;  /* decoy frames queued for sending */
+volatile uint32_t tx_skipped;   /* sends skipped because all 3 mailboxes were busy */
 volatile p1_rx_stats_t rx;      /* frames received from the H723 */
 volatile uint32_t rx_overruns;  /* FIFO0 overruns: frames lost because it was full */
 volatile p1_err_counts_t errs;  /* bus errors by type (see project1_frames.h) */
+
+/* Own sensor readings: raw ADC averages and converted values */
+volatile struct {
+    uint32_t vrefint_raw;
+    uint32_t ts_raw;
+    int32_t  temp_c100;
+    uint32_t vdda_mv;
+} local;
 
 /* Snapshot of CAN1's error status register (ESR) */
 volatile struct {
@@ -59,6 +65,8 @@ volatile struct {
 
 static void SystemClock_Config(void);
 static void LED_Init(void);
+static void ADC1_Init(void);
+static void read_sensors(p1_payload_t *p);
 static void CAN1_Init(void);
 static void CAN1_Filter(void);
 static void update_bus_status(void);
@@ -69,6 +77,7 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
     LED_Init();
+    ADC1_Init();
     CAN1_Init();
     CAN1_Filter();
 
@@ -88,8 +97,7 @@ int main(void)
         .DLC                = P1_DLC,
         .TransmitGlobalTime = DISABLE,
     };
-    CAN_TxHeaderTypeDef decoy = tx;
-    decoy.StdId = P1_ID_F429_DECOY;
+    p1_payload_t payload;
     uint8_t data[8];
     uint32_t mailbox;
 
@@ -99,23 +107,101 @@ int main(void)
 
         /* Mailboxes stay busy while no node acknowledges (the controller
          * keeps retrying). Skip rather than stop; sending resumes once the
-         * H723 is back. Two are needed: the frame and the decoy. */
-        if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) < 2) {
+         * H723 is back. */
+        if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0) {
             tx_skipped++;
             continue;
         }
 
+        read_sensors(&payload);
         tx_count++;
-        p1_fill_payload(data, tx_count);
+        payload.count = tx_count;
+        p1_pack(data, &payload);
         if (HAL_CAN_AddTxMessage(&hcan1, &tx, data, &mailbox) != HAL_OK) {
             Error_Handler();
         }
-        /* Same payload under the decoy ID: the H723 must never see it */
-        decoy_count++;
-        if (HAL_CAN_AddTxMessage(&hcan1, &decoy, data, &mailbox) != HAL_OK) {
+        HAL_GPIO_TogglePin(GPIOB, LED_BLUE);
+    }
+}
+
+/*
+ * ADC1, 12-bit, single conversions started by software. ADC clock =
+ * APB2 90 MHz / 4 = 22.5 MHz (max 36 MHz). The internal channels are
+ * enabled by the first HAL_ADC_ConfigChannel call for each.
+ */
+static void ADC1_Init(void)
+{
+    hadc1.Instance                   = ADC1;
+    hadc1.Init.ClockPrescaler        = ADC_CLOCK_SYNC_PCLK_DIV4;
+    hadc1.Init.Resolution            = ADC_RESOLUTION_12B;
+    hadc1.Init.ScanConvMode          = DISABLE;
+    hadc1.Init.ContinuousConvMode    = DISABLE;
+    hadc1.Init.DiscontinuousConvMode = DISABLE;
+    hadc1.Init.ExternalTrigConvEdge  = ADC_EXTERNALTRIGCONVEDGE_NONE;
+    hadc1.Init.ExternalTrigConv      = ADC_SOFTWARE_START;
+    hadc1.Init.DataAlign             = ADC_DATAALIGN_RIGHT;
+    hadc1.Init.NbrOfConversion       = 1;
+    hadc1.Init.DMAContinuousRequests = DISABLE;
+    hadc1.Init.EOCSelection          = ADC_EOC_SINGLE_CONV;
+    if (HAL_ADC_Init(&hadc1) != HAL_OK) {
+        Error_Handler();
+    }
+}
+
+/* Average ADC_SAMPLES conversions of one channel */
+static uint32_t adc_read(uint32_t channel)
+{
+    ADC_ChannelConfTypeDef ch = {
+        .Channel      = channel,
+        .Rank         = 1,
+        /* 480 cycles at 22.5 MHz = 21 us; the temperature sensor needs at
+         * least 10 us to charge the ADC's sampling capacitor */
+        .SamplingTime = ADC_SAMPLETIME_480CYCLES,
+    };
+    uint32_t sum = 0;
+
+    if (HAL_ADC_ConfigChannel(&hadc1, &ch) != HAL_OK) {
+        Error_Handler();
+    }
+    for (uint32_t i = 0; i < ADC_SAMPLES; i++) {
+        if (HAL_ADC_Start(&hadc1) != HAL_OK ||
+            HAL_ADC_PollForConversion(&hadc1, 10) != HAL_OK) {
             Error_Handler();
         }
-        HAL_GPIO_TogglePin(GPIOB, LED_BLUE);
+        sum += HAL_ADC_GetValue(&hadc1);
+    }
+    HAL_ADC_Stop(&hadc1);
+    return sum / ADC_SAMPLES;
+}
+
+/* Read VREFINT and the temperature sensor; fill in temperature and VDDA */
+static void read_sensors(p1_payload_t *p)
+{
+    /* Factory calibration in system memory (see project1_frames.h) */
+    const p1_sensor_cal_t cal = {
+        .vrefint_cal = *VREFINT_CAL_ADDR,
+        .ts_cal1     = *TEMPSENSOR_CAL1_ADDR,
+        .ts_cal2     = *TEMPSENSOR_CAL2_ADDR,
+        .ts_cal1_c   = TEMPSENSOR_CAL1_TEMP,    /* 30 degC */
+        .ts_cal2_c   = TEMPSENSOR_CAL2_TEMP,    /* 110 degC */
+        .cal_vdda_mv = VREFINT_CAL_VREF,        /* 3300 mV */
+    };
+
+    uint32_t vref = adc_read(ADC_CHANNEL_VREFINT);
+    uint32_t ts   = adc_read(ADC_CHANNEL_TEMPSENSOR);
+    p1_sensor_convert(&cal, vref, ts, &p->temp_c100, &p->vdda_mv);
+
+    local.vrefint_raw = vref;
+    local.ts_raw      = ts;
+    local.temp_c100   = p->temp_c100;
+    local.vdda_mv     = p->vdda_mv;
+}
+
+/* Called by HAL_ADC_Init */
+void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc)
+{
+    if (hadc->Instance == ADC1) {
+        __HAL_RCC_ADC1_CLK_ENABLE();
     }
 }
 
@@ -145,14 +231,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
         Error_Handler();
     }
 
+    p1_payload_t p = p1_unpack(data);
     int ok = h.IDE == CAN_ID_STD && h.StdId == P1_ID_H723 &&
              h.RTR == CAN_RTR_DATA && h.DLC == P1_DLC &&
-             p1_payload_pattern_ok(data);
+             p1_payload_plausible(&p);
     if (!ok) {
         rx.bad++;
         return;
     }
-    p1_rx_count(&rx, p1_payload_count(data), HAL_GetTick());
+    p1_rx_count(&rx, &p, HAL_GetTick());
     HAL_GPIO_TogglePin(GPIOB, LED_GREEN);
 }
 
@@ -207,7 +294,7 @@ static void CAN1_Init(void)
  * bits plus IDE and RTR, so only standard data frames with ID 0x200 pass.
  *
  * With -DP1_FILTER_ACCEPT_ALL (make FILTER=all) the mask is 0 instead, so
- * every frame passes: the control for step 7's decoy test.
+ * every frame passes: the control for step 7's filter test.
  */
 static void CAN1_Filter(void)
 {

@@ -389,3 +389,50 @@ Result over 25 minutes:
 | Frames lost or bad | 0 | 0 (about 3,000 each way) |
 
 **The trim is not a fix.** The H723's offset kept moving during the run: averaged since the start it went −0.050%, −0.054%, −0.058%, −0.069%, with about −0.10% in the last 5 minutes alone, while the F429 stayed within 0.001% of wall time. So the STLINK-V3's clock output drifts. That fits an internal RC oscillator rather than a crystal, but this hasn't been confirmed against ST's documentation. CAN tolerates about 0.3% here, so if the drift continues the errors will return. The proper fix is an accurate clock for the H723: an HSE crystal on the board (see ST's UM2407 user manual for the solder bridges and parts), or an external clock source. Re-measure the offset if errors reappear.
+
+#### Step 8: Periodic sensor frames
+
+The last part of the Project 1 goal. No external sensor is wired up, so each board sends readings from sensors built into its own chip, read with its ADC (analog-to-digital converter: turns a voltage into a number, here 0–4095 for 0 V to VDDA):
+
+- **Temperature sensor:** measures the temperature of the chip itself (the die), not of the room
+- **VREFINT:** an internal reference voltage of about 1.2 V. Its exact value is measured at the factory, so reading it shows what VDDA (the analog supply voltage, nominally 3.3 V) actually is
+
+The payload changes from the counter and fixed pattern to the counter and sensor values. The layout and conversion live in `common/project1_frames.h`:
+
+| Bytes | Field |
+|---|---|
+| 0–3 | Counter, still used to detect lost frames |
+| 4–5 | Sender's chip temperature in 0.01 °C (signed) |
+| 6–7 | Sender's VDDA in mV |
+
+The fixed `CA FE BA BE` pattern is gone: CAN's CRC already catches corrupted frames. In its place, the receiver checks that the values are plausible (−40 to 125 °C, 2700 to 3600 mV), which catches a broken sender or a layout mismatch. The step 7 decoys are gone too; `make FILTER=all` still builds the accept-all control.
+
+**Turning readings into values.** Both chips store factory calibration readings in system memory, taken at VDDA = 3.3 V: VREFINT_CAL, and the temperature sensor at two temperatures, TS_CAL1 and TS_CAL2. Then:
+
+```
+VDDA = 3300 mV × VREFINT_CAL ÷ VREFINT reading
+       (VREFINT is fixed, so a lower reading means a higher VDDA)
+T    = straight line through (TS_CAL1, 30 °C) and (TS_CAL2, 110 °C on the F429, 130 °C on the H723),
+       applied to the temperature reading rescaled from VDDA to 3.3 V
+```
+
+| | F429 | H723 |
+|---|---|---|
+| ADC | ADC1, 12-bit, 22.5 MHz (APB2 ÷ 4) | ADC3, 12-bit, 16 MHz (per_ck = HSI 64 MHz ÷ 4). The H723's other ADCs aren't wired to the internal sensors |
+| Sampling time | 480 cycles = 21 µs | 640.5 cycles = 40 µs |
+| Calibration read from the chip | VREFINT_CAL 1491, TS_CAL1 927, TS_CAL2 1195 | VREFINT_CAL 1514, TS_CAL1 765, TS_CAL2 1014 |
+
+The temperature sensor needs a long sampling time (at least about 10 µs) because it can only charge the ADC's sampling capacitor slowly. Each value is the average of 16 readings, to reduce noise.
+
+The conversion is written out in `p1_sensor_convert()` rather than using the HAL's `__LL_ADC_CALC_TEMPERATURE`: on the H723 that macro scales the reading to 16 bits, but this chip's calibration values are 12-bit, as the values read from it show.
+
+Verified on hardware: flashed both and read over SWD. Each board's received sensor values (`rx.last_temp_c100`, `rx.last_vdda_mv`) matched exactly what the other board measured (`local`):
+
+| | Own reading | Received by the other board |
+|---|---|---|
+| F429 | 38.39 °C, 3273 mV | 38.39 °C, 3273 mV |
+| H723 | 33.8 °C, 3302 mV | 33.8 °C, 3302 mV |
+
+About 120 frames each way in a minute, none lost, and no bus errors. The F429 counted 1 bad frame: it was flashed first and received one H723 frame still in the step 7 format, whose `CA FE BA BE` reads as an impossible VDDA (48,826 mV), so the plausibility check rejected it. The temperatures are of each chip's die, which runs warmer than the room; the factory calibration is only specified to ±5 °C, so they're approximate.
+
+With this step, Project 1's goal is met: the two boards exchange periodic sensor frames at 500 kbps, with hardware acceptance filtering and interrupt-driven RX. The H723's clock still relies on the PLL trim from step 7 (see the open issue there).

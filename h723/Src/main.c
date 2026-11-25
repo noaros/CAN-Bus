@@ -1,17 +1,14 @@
 /*
- * NUCLEO-H723ZG: exchange with the F429 over the real bus, with hardware
- * acceptance filtering (bring-up step 7).
+ * NUCLEO-H723ZG: periodic sensor frames to the F429 (bring-up step 8).
  *
- * FDCAN1 runs classic CAN at 500 kbps in normal mode. Every 500 ms it sends
- * ID 0x200 (P1_ID_H723) with an incrementing counter, and it receives the
- * F429's ID 0x100 frames, checking the ID, DLC, pattern and that the
- * counter goes up by exactly 1. Frame layout is shared with the F429 in
- * common/project1_frames.h.
- *
- * The filter accepts only ID 0x100. To test it, each board also sends a
- * decoy (here 0x201) that the other board's filter must drop in hardware;
- * a decoy reaching software would be counted in rx.bad. Build with
- * `make FILTER=all` for the accept-all control, where decoys do get through.
+ * FDCAN1 runs classic CAN at 500 kbps in normal mode. Every 500 ms it reads
+ * the chip's internal temperature sensor and VREFINT with ADC3, and sends
+ * ID 0x200 (P1_ID_H723) with a counter, the temperature and VDDA. It
+ * receives the F429's ID 0x100 frames, checking the ID, DLC, that the
+ * sensor values are plausible and that the counter goes up by exactly 1.
+ * The hardware filter accepts only ID 0x100 (`make FILTER=all` for the
+ * accept-all control). Frame layout and sensor conversion are shared with
+ * the F429 in common/project1_frames.h.
  *
  *   LD2 (yellow, PE1)  toggles on every frame queued for sending
  *   LD1 (green, PB0)   toggles on every good frame from the F429
@@ -21,16 +18,18 @@
  *
  * Working: yellow and green both blink at 1 Hz, red stays off.
  *
- * Errors don't stop the program here, unlike step 5: on a real bus they are
- * expected while the other board is missing, and CAN recovers by itself
- * once it returns (after bus-off, FDCAN needs software to restart it, which
- * update_bus_status() does). Only a failed HAL setup call stops everything.
+ * Bus errors don't stop the program: they are expected while the other
+ * board is missing, and CAN recovers by itself (after bus-off, FDCAN needs
+ * software to restart it, which update_bus_status() does). Only a failed
+ * HAL setup call stops everything.
  *
- * For checking over SWD: clk_sys_hz, clk_fdcan_hz, tx_count, tx_skipped,
- * decoy_count, rx (p1_rx_stats_t), rx_lost_fifo, bus_off_recoveries and bus
- * (error counters and state, refreshed every 500 ms).
+ * For checking over SWD: clk_sys_hz, clk_fdcan_hz, local (own sensor
+ * readings), tx_count, tx_skipped, rx (p1_rx_stats_t, including the F429's
+ * last sensor values), rx_lost_fifo, bus_off_recoveries, errs (bus errors
+ * by type) and bus (error counters and state).
  */
 #include "stm32h7xx_hal.h"
+#include "stm32h7xx_ll_adc.h"
 #include "project1_frames.h"
 
 #define LED_GREEN   GPIO_PIN_0    /* LD1, PB0 */
@@ -38,19 +37,28 @@
 #define LED_YELLOW  GPIO_PIN_1    /* LD2, PE1 */
 
 #define RX_TIMEOUT_MS  1500U
+#define ADC_SAMPLES    16U        /* readings averaged per sensor */
 
 FDCAN_HandleTypeDef hfdcan1;
+ADC_HandleTypeDef hadc3;
 
 volatile uint32_t clk_sys_hz;
 volatile uint32_t clk_fdcan_hz;
 
 volatile uint32_t tx_count;           /* frames queued for sending */
-volatile uint32_t tx_skipped;         /* sends skipped because the TX queue had < 2 free slots */
-volatile uint32_t decoy_count;        /* decoy frames queued for sending */
+volatile uint32_t tx_skipped;         /* sends skipped because the TX queue was full */
 volatile p1_rx_stats_t rx;            /* frames received from the F429 */
 volatile uint32_t rx_lost_fifo;       /* Rx FIFO 0 message lost: it was full */
 volatile uint32_t bus_off_recoveries; /* restarts after bus-off */
 volatile p1_err_counts_t errs;        /* bus errors by type (see project1_frames.h) */
+
+/* Own sensor readings: raw ADC averages and converted values */
+volatile struct {
+    uint32_t vrefint_raw;
+    uint32_t ts_raw;
+    int32_t  temp_c100;
+    uint32_t vdda_mv;
+} local;
 
 /* Snapshot of FDCAN1's error counters (ECR) and protocol status (PSR) */
 volatile struct {
@@ -63,6 +71,8 @@ volatile struct {
 
 static void SystemClock_Config(void);
 static void LED_Init(void);
+static void ADC3_Init(void);
+static void read_sensors(p1_payload_t *p);
 static void FDCAN1_Init(void);
 static void FDCAN1_Filter(void);
 static void update_bus_status(void);
@@ -77,6 +87,7 @@ int main(void)
     clk_sys_hz   = HAL_RCC_GetSysClockFreq();
     clk_fdcan_hz = (uint32_t)HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FDCAN);
 
+    ADC3_Init();
     FDCAN1_Init();
     FDCAN1_Filter();
 
@@ -100,8 +111,7 @@ int main(void)
         .TxEventFifoControl  = FDCAN_NO_TX_EVENTS,
         .MessageMarker       = 0,
     };
-    FDCAN_TxHeaderTypeDef decoy = tx;
-    decoy.Identifier = P1_ID_H723_DECOY;
+    p1_payload_t payload;
     uint8_t data[8];
 
     while (1) {
@@ -110,23 +120,116 @@ int main(void)
 
         /* The queue fills while no node acknowledges (the controller keeps
          * retrying). Skip rather than stop; sending resumes once the F429
-         * is back. Two slots are needed: the frame and the decoy. */
-        if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) < 2) {
+         * is back. */
+        if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0) {
             tx_skipped++;
             continue;
         }
 
+        read_sensors(&payload);
         tx_count++;
-        p1_fill_payload(data, tx_count);
+        payload.count = tx_count;
+        p1_pack(data, &payload);
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx, data) != HAL_OK) {
             Error_Handler();
         }
-        /* Same payload under the decoy ID: the F429 must never see it */
-        decoy_count++;
-        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &decoy, data) != HAL_OK) {
+        HAL_GPIO_TogglePin(GPIOE, LED_YELLOW);
+    }
+}
+
+/*
+ * ADC3 (the H723's 12-bit ADC, the only one wired to the internal sensors),
+ * single conversions started by software. Its kernel clock is per_ck, which
+ * defaults to HSI (64 MHz), divided by 4 = 16 MHz; selected in
+ * SystemClock_Config. HSI's accuracy doesn't matter for the ADC.
+ */
+static void ADC3_Init(void)
+{
+    hadc3.Instance                      = ADC3;
+    hadc3.Init.ClockPrescaler           = ADC_CLOCK_ASYNC_DIV4;
+    hadc3.Init.Resolution               = ADC_RESOLUTION_12B;
+    hadc3.Init.DataAlign                = ADC3_DATAALIGN_RIGHT;
+    hadc3.Init.ScanConvMode             = ADC_SCAN_DISABLE;
+    hadc3.Init.EOCSelection             = ADC_EOC_SINGLE_CONV;
+    hadc3.Init.LowPowerAutoWait         = DISABLE;
+    hadc3.Init.ContinuousConvMode       = DISABLE;
+    hadc3.Init.NbrOfConversion          = 1;
+    hadc3.Init.DiscontinuousConvMode    = DISABLE;
+    hadc3.Init.ExternalTrigConv         = ADC_SOFTWARE_START;
+    hadc3.Init.ExternalTrigConvEdge     = ADC_EXTERNALTRIGCONVEDGE_NONE;
+    hadc3.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DR;
+    hadc3.Init.SamplingMode             = ADC_SAMPLING_MODE_NORMAL;
+    hadc3.Init.DMAContinuousRequests    = DISABLE;
+    hadc3.Init.Overrun                  = ADC_OVR_DATA_OVERWRITTEN;
+    hadc3.Init.LeftBitShift             = ADC_LEFTBITSHIFT_NONE;
+    hadc3.Init.OversamplingMode         = DISABLE;
+    if (HAL_ADC_Init(&hadc3) != HAL_OK) {
+        Error_Handler();
+    }
+    /* Measure and cancel the ADC's own offset error before first use */
+    if (HAL_ADCEx_Calibration_Start(&hadc3, ADC_CALIB_OFFSET, ADC_SINGLE_ENDED) != HAL_OK) {
+        Error_Handler();
+    }
+}
+
+/* Average ADC_SAMPLES conversions of one channel */
+static uint32_t adc_read(uint32_t channel)
+{
+    ADC_ChannelConfTypeDef ch = {
+        .Channel      = channel,
+        .Rank         = ADC_REGULAR_RANK_1,
+        /* 640.5 cycles at 16 MHz = 40 us; the temperature sensor needs at
+         * least 9 us to charge the ADC's sampling capacitor */
+        .SamplingTime = ADC3_SAMPLETIME_640CYCLES_5,
+        .SingleDiff   = ADC_SINGLE_ENDED,
+        .OffsetNumber = ADC_OFFSET_NONE,
+        .Offset       = 0,
+    };
+    uint32_t sum = 0;
+
+    if (HAL_ADC_ConfigChannel(&hadc3, &ch) != HAL_OK) {
+        Error_Handler();
+    }
+    for (uint32_t i = 0; i < ADC_SAMPLES; i++) {
+        if (HAL_ADC_Start(&hadc3) != HAL_OK ||
+            HAL_ADC_PollForConversion(&hadc3, 10) != HAL_OK) {
             Error_Handler();
         }
-        HAL_GPIO_TogglePin(GPIOE, LED_YELLOW);
+        sum += HAL_ADC_GetValue(&hadc3);
+    }
+    HAL_ADC_Stop(&hadc3);
+    return sum / ADC_SAMPLES;
+}
+
+/* Read VREFINT and the temperature sensor; fill in temperature and VDDA */
+static void read_sensors(p1_payload_t *p)
+{
+    /* Factory calibration in system memory (see project1_frames.h). On the
+     * H723 these are 12-bit readings, and TS_CAL2 is taken at 130 degC. */
+    const p1_sensor_cal_t cal = {
+        .vrefint_cal = *VREFINT_CAL_ADDR,
+        .ts_cal1     = *TEMPSENSOR_CAL1_ADDR,
+        .ts_cal2     = *TEMPSENSOR_CAL2_ADDR,
+        .ts_cal1_c   = TEMPSENSOR_CAL1_TEMP,    /* 30 degC */
+        .ts_cal2_c   = TEMPSENSOR_CAL2_TEMP,    /* 130 degC */
+        .cal_vdda_mv = VREFINT_CAL_VREF,        /* 3300 mV */
+    };
+
+    uint32_t vref = adc_read(ADC_CHANNEL_VREFINT);
+    uint32_t ts   = adc_read(ADC_CHANNEL_TEMPSENSOR);
+    p1_sensor_convert(&cal, vref, ts, &p->temp_c100, &p->vdda_mv);
+
+    local.vrefint_raw = vref;
+    local.ts_raw      = ts;
+    local.temp_c100   = p->temp_c100;
+    local.vdda_mv     = p->vdda_mv;
+}
+
+/* Called by HAL_ADC_Init */
+void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc)
+{
+    if (hadc->Instance == ADC3) {
+        __HAL_RCC_ADC3_CLK_ENABLE();
     }
 }
 
@@ -176,15 +279,16 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         Error_Handler();
     }
 
+    p1_payload_t p = p1_unpack(data);
     int ok = h.IdType == FDCAN_STANDARD_ID && h.Identifier == P1_ID_F429 &&
              h.RxFrameType == FDCAN_DATA_FRAME &&
              h.FDFormat == FDCAN_CLASSIC_CAN && h.DataLength == P1_DLC &&
-             p1_payload_pattern_ok(data);
+             p1_payload_plausible(&p);
     if (!ok) {
         rx.bad++;
         return;
     }
-    p1_rx_count(&rx, p1_payload_count(data), HAL_GetTick());
+    p1_rx_count(&rx, &p, HAL_GetTick());
     HAL_GPIO_TogglePin(GPIOB, LED_GREEN);
 }
 
@@ -256,7 +360,7 @@ static void FDCAN1_Init(void)
  * remote frames, so frames only get in through filter element 0.
  *
  * With -DP1_FILTER_ACCEPT_ALL (make FILTER=all) the mask is 0 instead, so
- * every standard data frame passes: the control for step 7's decoy test.
+ * every standard data frame passes: the control for step 7's filter test.
  */
 static void FDCAN1_Filter(void)
 {
@@ -364,9 +468,10 @@ static void SystemClock_Config(void)
         Error_Handler();
     }
 
-    /* FDCANSEL mux: PLL1Q (80 MHz) */
-    periph.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
+    /* FDCANSEL mux: PLL1Q (80 MHz). ADCSEL mux: per_ck (HSI 64 MHz by default) */
+    periph.PeriphClockSelection = RCC_PERIPHCLK_FDCAN | RCC_PERIPHCLK_ADC;
     periph.FdcanClockSelection  = RCC_FDCANCLKSOURCE_PLL;
+    periph.AdcClockSelection    = RCC_ADCCLKSOURCE_CLKP;
     if (HAL_RCCEx_PeriphCLKConfig(&periph) != HAL_OK) {
         Error_Handler();
     }

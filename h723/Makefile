@@ -42,7 +42,7 @@ LDSCRIPT := STM32H723ZGTx_FLASH.ld
 MCU     := -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard
 
 ifeq ($(FILTER),all)
-DEFINES  += -DP1_FILTER_ACCEPT_ALL
+DEFINES  += -DFILTER_ACCEPT_ALL
 endif
 
 ifeq ($(DEBUG),1)

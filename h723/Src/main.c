@@ -3,12 +3,12 @@
  *
  * FDCAN1 runs classic CAN at 500 kbps in normal mode. Every 500 ms it reads
  * the chip's internal temperature sensor and VREFINT with ADC3, and sends
- * ID 0x200 (P1_ID_H723) with a counter, the temperature and VDDA. It
+ * ID 0x200 (NET_ID_H723) with a counter, the temperature and VDDA. It
  * receives the F429's ID 0x100 frames, checking the ID, DLC, that the
  * sensor values are plausible and that the counter goes up by exactly 1.
  * The hardware filter accepts only ID 0x100 (`make FILTER=all` for the
  * accept-all control). Frame layout and sensor conversion are shared with
- * the F429 in common/project1_frames.h.
+ * the F429 in common/net_frames.h.
  *
  *   LD2 (yellow, PE1)  toggles on every frame queued for sending
  *   LD1 (green, PB0)   toggles on every good frame from the F429
@@ -24,13 +24,13 @@
  * HAL setup call stops everything.
  *
  * For checking over SWD: clk_sys_hz, clk_fdcan_hz, local (own sensor
- * readings), tx_count, tx_skipped, rx (p1_rx_stats_t, including the F429's
+ * readings), tx_count, tx_skipped, rx (net_rx_stats_t, including the F429's
  * last sensor values), rx_lost_fifo, bus_off_recoveries, errs (bus errors
  * by type) and bus (error counters and state).
  */
 #include "stm32h7xx_hal.h"
 #include "stm32h7xx_ll_adc.h"
-#include "project1_frames.h"
+#include "net_frames.h"
 
 #define LED_GREEN   GPIO_PIN_0    /* LD1, PB0 */
 #define LED_RED     GPIO_PIN_14   /* LD3, PB14 */
@@ -47,10 +47,10 @@ volatile uint32_t clk_fdcan_hz;
 
 volatile uint32_t tx_count;           /* frames queued for sending */
 volatile uint32_t tx_skipped;         /* sends skipped because the TX queue was full */
-volatile p1_rx_stats_t rx;            /* frames received from the F429 */
+volatile net_rx_stats_t rx;            /* frames received from the F429 */
 volatile uint32_t rx_lost_fifo;       /* Rx FIFO 0 message lost: it was full */
 volatile uint32_t bus_off_recoveries; /* restarts after bus-off */
-volatile p1_err_counts_t errs;        /* bus errors by type (see project1_frames.h) */
+volatile net_err_counts_t errs;        /* bus errors by type (see net_frames.h) */
 
 /* Own sensor readings: raw ADC averages and converted values */
 volatile struct {
@@ -72,7 +72,7 @@ volatile struct {
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void ADC3_Init(void);
-static void read_sensors(p1_payload_t *p);
+static void read_sensors(net_payload_t *p);
 static void FDCAN1_Init(void);
 static void FDCAN1_Filter(void);
 static void update_bus_status(void);
@@ -101,7 +101,7 @@ int main(void)
     }
 
     FDCAN_TxHeaderTypeDef tx = {
-        .Identifier          = P1_ID_H723,
+        .Identifier          = NET_ID_H723,
         .IdType              = FDCAN_STANDARD_ID,
         .TxFrameType         = FDCAN_DATA_FRAME,
         .DataLength          = FDCAN_DLC_BYTES_8,
@@ -111,7 +111,7 @@ int main(void)
         .TxEventFifoControl  = FDCAN_NO_TX_EVENTS,
         .MessageMarker       = 0,
     };
-    p1_payload_t payload;
+    net_payload_t payload;
     uint8_t data[8];
 
     while (1) {
@@ -129,7 +129,7 @@ int main(void)
         read_sensors(&payload);
         tx_count++;
         payload.count = tx_count;
-        p1_pack(data, &payload);
+        net_pack(data, &payload);
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx, data) != HAL_OK) {
             Error_Handler();
         }
@@ -202,11 +202,11 @@ static uint32_t adc_read(uint32_t channel)
 }
 
 /* Read VREFINT and the temperature sensor; fill in temperature and VDDA */
-static void read_sensors(p1_payload_t *p)
+static void read_sensors(net_payload_t *p)
 {
-    /* Factory calibration in system memory (see project1_frames.h). On the
+    /* Factory calibration in system memory (see net_frames.h). On the
      * H723 these are 12-bit readings, and TS_CAL2 is taken at 130 degC. */
-    const p1_sensor_cal_t cal = {
+    const net_sensor_cal_t cal = {
         .vrefint_cal = *VREFINT_CAL_ADDR,
         .ts_cal1     = *TEMPSENSOR_CAL1_ADDR,
         .ts_cal2     = *TEMPSENSOR_CAL2_ADDR,
@@ -217,7 +217,7 @@ static void read_sensors(p1_payload_t *p)
 
     uint32_t vref = adc_read(ADC_CHANNEL_VREFINT);
     uint32_t ts   = adc_read(ADC_CHANNEL_TEMPSENSOR);
-    p1_sensor_convert(&cal, vref, ts, &p->temp_c100, &p->vdda_mv);
+    net_sensor_convert(&cal, vref, ts, &p->temp_c100, &p->vdda_mv);
 
     local.vrefint_raw = vref;
     local.ts_raw      = ts;
@@ -279,16 +279,16 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         Error_Handler();
     }
 
-    p1_payload_t p = p1_unpack(data);
-    int ok = h.IdType == FDCAN_STANDARD_ID && h.Identifier == P1_ID_F429 &&
+    net_payload_t p = net_unpack(data);
+    int ok = h.IdType == FDCAN_STANDARD_ID && h.Identifier == NET_ID_F429 &&
              h.RxFrameType == FDCAN_DATA_FRAME &&
-             h.FDFormat == FDCAN_CLASSIC_CAN && h.DataLength == P1_DLC &&
-             p1_payload_plausible(&p);
+             h.FDFormat == FDCAN_CLASSIC_CAN && h.DataLength == NET_DLC &&
+             net_payload_plausible(&p);
     if (!ok) {
         rx.bad++;
         return;
     }
-    p1_rx_count(&rx, &p, HAL_GetTick());
+    net_rx_count(&rx, &p, HAL_GetTick());
     HAL_GPIO_TogglePin(GPIOB, LED_GREEN);
 }
 
@@ -359,15 +359,15 @@ static void FDCAN1_Init(void)
  * into Rx FIFO 0 by default. It is set to reject them, along with all
  * remote frames, so frames only get in through filter element 0.
  *
- * With -DP1_FILTER_ACCEPT_ALL (make FILTER=all) the mask is 0 instead, so
+ * With -DFILTER_ACCEPT_ALL (make FILTER=all) the mask is 0 instead, so
  * every standard data frame passes: the control for step 7's filter test.
  */
 static void FDCAN1_Filter(void)
 {
-#ifdef P1_FILTER_ACCEPT_ALL
+#ifdef FILTER_ACCEPT_ALL
     const uint32_t id = 0x000, mask = 0x000;
 #else
-    const uint32_t id = P1_ID_F429, mask = 0x7FF;
+    const uint32_t id = NET_ID_F429, mask = 0x7FF;
 #endif
     FDCAN_FilterTypeDef f = {
         .IdType       = FDCAN_STANDARD_ID,

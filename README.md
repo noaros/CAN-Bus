@@ -1,10 +1,8 @@
 # CAN Bus
 
-## Project 1: Two-Node CAN Network
+A 2-node CAN bus network in C between STM32F429 (bxCAN) and STM32H723 (FDCAN) Nucleo boards, sending periodic sensor frames at 500 kbps with hardware acceptance filtering and interrupt-driven RX.
 
-- Goal: Build a 2-node CAN bus network in C between STM32F429 (bxCAN) and STM32H723 (FDCAN) Nucleo boards, sending periodic sensor frames at 500 kbps with hardware acceptance filtering and interrupt-driven RX
-
-### Wiring
+## Wiring
 
 Transceivers: Waveshare SN65HVD230 (3.3 V). Pins are the same on both boards (PD0/PD1, AF9, on the CN9 connector).
 
@@ -27,15 +25,15 @@ Bus connections between the two transceivers:
 - Each Waveshare board has a 120 Ω termination resistor, so the bus is terminated at both ends. With power off, CANH to CANL should measure about 60 Ω.
 - The GND wire between transceivers is optional here: with both Nucleos plugged into the same laptop, their grounds are already connected through USB. Add it if a board is powered from a different source (charger, power bank, another computer) or the bus gets longer.
 
-![Project 1 wiring: NUCLEO-F429ZI (top) and NUCLEO-H723ZG (bottom), each wired to a Waveshare SN65HVD230 transceiver on the breadboard](images/project1-wiring.jpg)
+![Wiring: NUCLEO-F429ZI (top) and NUCLEO-H723ZG (bottom), each wired to a Waveshare SN65HVD230 transceiver on the breadboard](images/wiring.jpg)
 
-### Bit Timing (500 kbps)
+## Bit Timing (500 kbps)
 
 Bit rate = CAN clock ÷ (prescaler × (1 + Seg1 + Seg2))
 
 The formula builds a bit in three steps: clock ticks → time quanta (tq) → one bit.
 
-#### 1. CAN clock
+### 1. CAN clock
 
 The CAN clock is the clock feeding the CAN peripheral (see the "CAN clock" row in the table below), not the CPU core clock:
 
@@ -44,7 +42,7 @@ The CAN clock is the clock feeding the CAN peripheral (see the "CAN clock" row i
 
 The **period** of the CAN clock is how long one tick lasts: period = 1 ÷ CAN clock (12.5 ns at 80 MHz).
 
-#### 2. Time quantum (tq)
+### 2. Time quantum (tq)
 
 A **time quantum (tq)** is the basic unit of time the CAN controller uses to build a bit. Every part of the bit (Sync, Seg1, Seg2, SJW) is set as a whole number of tq, because tq are what the hardware counts.
 
@@ -71,7 +69,7 @@ A tq has **no fixed duration**. Like a beat in music, its real duration depends 
 
 A bigger prescaler means more ticks per tq, so a longer tq and a slower bit rate.
 
-#### 3. One bit is a whole number of tq
+### 3. One bit is a whole number of tq
 
 Each bit is split into three segments, all measured in tq:
 
@@ -88,7 +86,7 @@ Each bit is split into three segments, all measured in tq:
 | Seg1 | Configurable | Time before the sample point. Lets the signal travel across the bus and settle before it is read |
 | Seg2 | Configurable | Time after the sample point. Leaves room to process the bit and to shorten the bit when resynchronizing |
 
-#### 4. Putting it together
+### 4. Putting it together
 
 ```
 bit time = tq × (1 + Seg1 + Seg2) = (prescaler ÷ CAN clock) × (1 + Seg1 + Seg2)
@@ -104,13 +102,13 @@ bit rate = 1 ÷ bit time           = CAN clock ÷ (prescaler × (1 + Seg1 + Seg2
 
 The two boards use different clocks, prescalers and tq counts, but arrive at the same 2 µs bit time. That is the only thing nodes on a bus must agree on.
 
-#### Sample point
+### Sample point
 
 Sample point = (1 + Seg1) ÷ (1 + Seg1 + Seg2)
 
 The bus is read at the end of Seg1. A longer Seg1 moves the sample point later; 87.5% is the CiA-recommended value for rates up to 800 kbps. The CAN spec splits Seg1 into Prop_Seg and Phase_Seg1; STM32 combines them into one setting.
 
-#### SJW
+### SJW
 
 **SJW (synchronization jump width)** is the most the controller may adjust one bit, in tq, to stay in step with the other nodes. When an edge arrives late, it lengthens Seg1 by up to SJW; when it arrives early, it shortens Seg2 by up to SJW. SJW must not exceed Seg2. A larger SJW tolerates more clock mismatch between nodes.
 
@@ -129,7 +127,7 @@ Two nodes can be off in opposite directions, so the largest allowed difference b
 
 SJW 1 assumed both boards' HSE clocks are crystal-accurate (around 0.005%), which leaves a lot of margin. That turned out not to hold for the H723: see the open issue in step 7. Raising SJW to 2 adds margin without moving the sample point. Going further means a larger Seg2, so an earlier sample point, which leaves less margin for signal delay on long cables (not an issue on a bench bus), and in real networks all nodes are usually set to an agreed sample point.
 
-#### Settings
+### Settings
 
 | Setting | NUCLEO-F429ZI (bxCAN) | NUCLEO-H723ZG (FDCAN) |
 |---|---|---|
@@ -145,13 +143,13 @@ FDCAN notes for the H723ZG:
 
 - Set `FrameFormat = FDCAN_FRAME_CLASSIC` so it can talk to the F429's bxCAN. Don't send CAN FD frames on this bus.
 
-#### FDCAN message RAM
+### FDCAN message RAM
 
 **Why it must be set:** bxCAN has fixed hardware mailboxes and FIFOs. FDCAN has none; it stores filters and messages in a shared message RAM that `HAL_FDCAN_Init()` divides up using the sizes below. A size of 0 means that storage doesn't exist, so nothing can be sent, received or filtered.
 
 | Setting | What it sets | Value | Why this value |
 |---|---|---|---|
-| `StdFiltersNbr` | Number of standard (11-bit) ID filters | 1 | Project 1 accepts one ID range from the F429 |
+| `StdFiltersNbr` | Number of standard (11-bit) ID filters | 1 | The H723 accepts one ID range from the F429 |
 | `RxFifo0ElmtsNbr` | Receive FIFO slots | 8 | Holds a burst of about 2 ms of back-to-back frames at 500 kbps, so none are lost while the CPU is busy |
 | `RxFifo0ElmtSize` | Data bytes per RX slot | `FDCAN_DATA_BYTES_8` | Classic CAN payloads are at most 8 bytes; larger sizes are only for CAN FD |
 | `TxFifoQueueElmtsNbr` | Transmit queue slots | 8 | Lets the application queue several frames without waiting for each to send |
@@ -159,11 +157,11 @@ FDCAN notes for the H723ZG:
 
 These take about 260 bytes (roughly 2.5% of the message RAM), leaving room for more filters or FDCAN2/3 later.
 
-### Bring-up
+## Bring-up
 
 Each step adds one new thing, so a failure points to one cause.
 
-#### Step 1: Hardware check ✅
+### Step 1: Hardware check ✅
 
 Done before powering the boards, so wiring faults are found with a multimeter instead of showing up later as software bugs.
 
@@ -174,7 +172,7 @@ Done before powering the boards, so wiring faults are found with a multimeter in
 | CANH to CANL resistance, power off | ✅ 60 Ω | Two 120 Ω terminators in parallel. Confirms both are fitted and the CANH/CANL wires connect the boards (120 Ω would mean a missing terminator or broken wire) |
 | Shared ground | ✅ via USB | Both Nucleos plug into the same laptop, so their grounds are connected without a separate GND wire |
 
-#### Step 2: HAL libraries and build setup ✅
+### Step 2: HAL libraries and build setup ✅
 
 Needed before any firmware can be built. ST's HAL provides the peripheral drivers (`HAL_CAN_*`, `HAL_UART_*`), and CMSIS provides the register definitions and startup code.
 
@@ -201,7 +199,7 @@ make flash
 
 `make flash` runs `tools/flash.sh`, which uses `STM32_Programmer_CLI` over the ST-LINK. With both Nucleos plugged in there are two ST-LINKs, so it flashes only the one whose target reports the board's device ID (`0x419` for the F429, `0x483` for the H723) and stops with an error if none does. Requires `arm-none-eabi-gcc`, GNU Make and STM32CubeProgrammer.
 
-#### Step 3: F429 bxCAN in loopback
+### Step 3: F429 bxCAN in loopback
 
 Tests the F429's CAN setup on its own, before the H723 is involved. In loopback mode the controller feeds every transmitted frame back to its own receiver, so a failure here is in the F429 code, not the wiring or the other board.
 
@@ -212,7 +210,7 @@ What it adds to `f429/Src/main.c`:
 | CAN1 init | Prescaler 6, BS1 12 tq, BS2 2 tq, SJW 1 tq | 500 kbps from the 45 MHz APB1 clock (see Settings above) |
 | Mode | `CAN_MODE_LOOPBACK` | Frames come back without a second node, and missing ACKs are ignored. TX is still driven on PD1, so frames are visible on a scope |
 | Filter | Bank 0, 32-bit mask mode, mask 0 → FIFO0 | bxCAN discards all received frames until a filter is active. Mask 0 accepts every ID, so the filter can't be the cause if nothing arrives. Narrowed once the bus works |
-| RX | FIFO0 message pending interrupt | Project 1 uses interrupt-driven RX. The callback checks the ID, DLC (data length code: the frame's 4-bit field giving the number of data bytes, 0–8 in classic CAN) and payload against the frame just sent |
+| RX | FIFO0 message pending interrupt | The network uses interrupt-driven RX. The callback checks the ID, DLC (data length code: the frame's 4-bit field giving the number of data bytes, 0–8 in classic CAN) and payload against the frame just sent |
 | Errors | Error, bus-off and last-error-code interrupts | Any CAN error stops the test with the red LED on |
 
 Every 500 ms it sends ID `0x123` with 8 bytes: a counter in bytes 0–3 and `CA FE BA BE` in bytes 4–7.
@@ -227,7 +225,7 @@ Done when blue and green both blink at 1 Hz and red stays off. If blue blinks bu
 
 Verified on hardware: flashed with `make flash`. Read over SWD while running, the TX counter rose by one every 500 ms, the green and blue LEDs toggled together with red off, CAN1's error status register (ESR: the transmit and receive error counters, the last error code and the bus-off flag) read 0 (no errors, both error counters 0), and its bit timing register (BTR: the prescaler, Seg1, Seg2 and SJW, each stored as value − 1, plus the loopback and silent mode bits) read `0x401B0005` (loopback on, prescaler 6, BS1 12 tq, BS2 2 tq, SJW 1 tq).
 
-#### Step 4: H723 HAL libraries and build setup
+### Step 4: H723 HAL libraries and build setup
 
 The same as step 2, for the NUCLEO-H723ZG. Two more submodules, pinned like the F4 ones (`lib/cmsis_core` is shared):
 
@@ -262,7 +260,7 @@ make
 make flash
 ```
 
-#### Step 5: H723 FDCAN in loopback
+### Step 5: H723 FDCAN in loopback
 
 The same test as step 3, on the H723's FDCAN. External loopback mode feeds every transmitted frame back to the controller's own receiver and still drives TX on PD1, so a failure here is in the H723 code, not the wiring or the F429.
 
@@ -299,7 +297,7 @@ Verified on hardware: flashed with `make flash`. Read over SWD while running, `t
 | PSR (protocol status register: last error code, error warning, error passive, bus-off) | `0x708` | No errors, idle between frames, not error warning, error passive or bus-off |
 | GFC (global filter configuration) | `0x2B` | Non-matching standard, extended and remote frames rejected |
 
-#### Step 6: First exchange over the real bus
+### Step 6: First exchange over the real bus
 
 Both boards switch from loopback to normal mode, so frames now go through the transceivers, the CANH/CANL wires and the terminators, and each board must understand the other's bit timing. This is the first test of the wiring and of the two different clock setups working together.
 
@@ -310,7 +308,7 @@ Each board sends one frame every 500 ms and checks the other's:
 | F429 | `0x100` | `0x200` |
 | H723 | `0x200` | `0x100` |
 
-The IDs and payload layout live in `common/project1_frames.h`, which both builds include, so the boards can't disagree about them. The payload is the same as before: a counter in bytes 0–3 and `CA FE BA BE` in bytes 4–7. A received frame can't be compared with one just sent any more, since it comes from the other board. Instead the receiver checks the ID, DLC and pattern, and that the counter goes up by exactly 1, which shows lost frames.
+The IDs and payload layout live in `common/net_frames.h`, which both builds include, so the boards can't disagree about them. The payload is the same as before: a counter in bytes 0–3 and `CA FE BA BE` in bytes 4–7. A received frame can't be compared with one just sent any more, since it comes from the other board. Instead the receiver checks the ID, DLC and pattern, and that the counter goes up by exactly 1, which shows lost frames.
 
 **Errors no longer stop the program.** On a real bus some errors are normal. While one board is missing or still starting up, nobody sends the ACK (acknowledge: the bit every receiving node sets to confirm it got a frame). The sender then gets an ACK error on every attempt and keeps retrying, and its TEC (transmit error counter) rises by 8 each time until it reaches error passive (TEC or REC, the receive error counter, at 128 or more: the node still works but signals errors less forcefully). Once the other board is back, each successful frame takes 1 off the counter, and the node returns to normal by itself. REC works the same way for receiving: +1 for most errors seen while receiving a frame, −1 for each frame received cleanly. Only TEC can cause bus-off, since a node with a high REC may just be listening to a noisy bus, while one with a high TEC is likely the cause. Halting on the first error, as steps 3 and 5 did, would stop a board just because the other was flashed second. So now:
 
@@ -345,9 +343,9 @@ The H723 received exactly the 177 frames the F429 sent. The F429 shows 180 of th
 - The H723 counted 1 bad frame: between the two flashes, the F429 was still running its step 3 loopback firmware, which drives TX and sent one `0x123` frame. Step 6 doesn't expect that ID
 - The H723's TEC was 112 right after both were flashed: during that same window nobody acknowledged its frames, since a node in loopback mode ignores the bus. It fell by 1 per frame and reached 0 within about a minute
 
-#### Step 7: Hardware acceptance filtering
+### Step 7: Hardware acceptance filtering
 
-Each board's filter goes from accept-all to only the other board's ID, so the CAN hardware drops every other frame before the CPU sees it. This is the "hardware acceptance filtering" in the Project 1 goal.
+Each board's filter goes from accept-all to only the other board's ID, so the CAN hardware drops every other frame before the CPU sees it. This is the "hardware acceptance filtering" in the goal at the top.
 
 | | Accepts | Filter setting |
 |---|---|---|
@@ -358,7 +356,7 @@ Each board's filter goes from accept-all to only the other board's ID, so the CA
 
 A rejected frame is still acknowledged: every node that receives a frame correctly sends the ACK bit, before and regardless of filtering. So the decoys cause no ACK errors.
 
-**Control build:** `make FILTER=all` keeps the accept-all filter (it defines `P1_FILTER_ACCEPT_ALL`), to show that the decoys do reach the receiver when the filter lets them. A stamp file in `build/` makes `main.c` rebuild when `FILTER` changes.
+**Control build:** `make FILTER=all` keeps the accept-all filter (it defines `FILTER_ACCEPT_ALL`), to show that the decoys do reach the receiver when the filter lets them. A stamp file in `build/` makes `main.c` rebuild when `FILTER` changes.
 
 Both builds also count bus errors by type in `errs`, from the controller's last error code (LEC). bxCAN and FDCAN use the same codes: 1 stuff (6 equal bits in a row, where the sender must have inserted an opposite stuff bit), 2 form (a fixed-format bit such as a delimiter was wrong), 3 ACK, 4 bit 1 (sent recessive, read dominant), 5 bit 0 (sent dominant, read recessive), 6 CRC (received CRC didn't match the frame).
 
@@ -405,14 +403,14 @@ Result over 25 minutes:
 
 **The trim is not a fix.** The H723's offset kept moving during the run: averaged since the start it went −0.050%, −0.054%, −0.058%, −0.069%, with about −0.10% in the last 5 minutes alone, while the F429 stayed within 0.001% of wall time. So the STLINK-V3's clock output drifts. That fits an internal RC oscillator rather than a crystal, but this hasn't been confirmed against ST's documentation. The two clocks may differ by at most 0.62% at the current settings, so if the drift continues the errors will return. The proper fix is an accurate clock for the H723: an HSE crystal on the board (see ST's UM2407 user manual for the solder bridges and parts), or an external clock source. Re-measure the offset if errors reappear.
 
-#### Step 8: Periodic sensor frames
+### Step 8: Periodic sensor frames
 
-The last part of the Project 1 goal. No external sensor is wired up, so each board sends readings from sensors built into its own chip, read with its ADC (analog-to-digital converter: turns a voltage into a number, here 0–4095 for 0 V to VDDA):
+The last part of the goal at the top. No external sensor is wired up, so each board sends readings from sensors built into its own chip, read with its ADC (analog-to-digital converter: turns a voltage into a number, here 0–4095 for 0 V to VDDA):
 
 - **Temperature sensor:** measures the temperature of the chip itself (the die), not of the room
 - **VREFINT:** an internal reference voltage of about 1.2 V. Its exact value is measured at the factory, so reading it shows what VDDA (the analog supply voltage, nominally 3.3 V) actually is
 
-The payload changes from the counter and fixed pattern to the counter and sensor values. The layout and conversion live in `common/project1_frames.h`:
+The payload changes from the counter and fixed pattern to the counter and sensor values. The layout and conversion live in `common/net_frames.h`:
 
 | Bytes | Field |
 |---|---|
@@ -439,7 +437,7 @@ T    = straight line through (TS_CAL1, 30 °C) and (TS_CAL2, 110 °C on the F429
 
 The temperature sensor needs a long sampling time (at least about 10 µs) because it can only charge the ADC's sampling capacitor slowly. Each value is the average of 16 readings, to reduce noise.
 
-The conversion is written out in `p1_sensor_convert()` rather than using the HAL's `__LL_ADC_CALC_TEMPERATURE`: on the H723 that macro scales the reading to 16 bits, but this chip's calibration values are 12-bit, as the values read from it show.
+The conversion is written out in `net_sensor_convert()` rather than using the HAL's `__LL_ADC_CALC_TEMPERATURE`: on the H723 that macro scales the reading to 16 bits, but this chip's calibration values are 12-bit, as the values read from it show.
 
 Verified on hardware: flashed both and read over SWD. Each board's received sensor values (`rx.last_temp_c100`, `rx.last_vdda_mv`) matched exactly what the other board measured (`local`):
 
@@ -450,4 +448,4 @@ Verified on hardware: flashed both and read over SWD. Each board's received sens
 
 About 120 frames each way in a minute, none lost, and no bus errors. The F429 counted 1 bad frame: it was flashed first and received one H723 frame still in the step 7 format, whose `CA FE BA BE` reads as an impossible VDDA (48,826 mV), so the plausibility check rejected it. The temperatures are of each chip's die, which runs warmer than the room; the factory calibration is only specified to ±5 °C, so they're approximate.
 
-With this step, Project 1's goal is met: the two boards exchange periodic sensor frames at 500 kbps, with hardware acceptance filtering and interrupt-driven RX. The H723's clock still relies on the PLL trim from step 7 (see the open issue there).
+With this step, the goal is met: the two boards exchange periodic sensor frames at 500 kbps, with hardware acceptance filtering and interrupt-driven RX. The H723's clock still relies on the PLL trim from step 7 (see the open issue there).

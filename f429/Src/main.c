@@ -3,12 +3,12 @@
  *
  * CAN1 runs at 500 kbps in normal mode. Every 500 ms it reads the chip's
  * internal temperature sensor and VREFINT with ADC1, and sends ID 0x100
- * (P1_ID_F429) with a counter, the temperature and VDDA. It receives the
+ * (NET_ID_F429) with a counter, the temperature and VDDA. It receives the
  * H723's ID 0x200 frames, checking the ID, DLC, that the sensor values are
  * plausible and that the counter goes up by exactly 1. The hardware filter
  * accepts only ID 0x200 (`make FILTER=all` for the accept-all control).
  * Frame layout and sensor conversion are shared with the H723 in
- * common/project1_frames.h.
+ * common/net_frames.h.
  *
  *   LD2 (blue, PB7)   toggles on every frame queued for sending
  *   LD1 (green, PB0)  toggles on every good frame from the H723
@@ -23,12 +23,12 @@
  * call stops everything (red on, others off).
  *
  * For checking over SWD: local (own sensor readings), tx_count, tx_skipped,
- * rx (p1_rx_stats_t, including the H723's last sensor values), rx_overruns,
+ * rx (net_rx_stats_t, including the H723's last sensor values), rx_overruns,
  * errs (bus errors by type) and bus (error counters and state).
  */
 #include "stm32f4xx_hal.h"
 #include "stm32f4xx_ll_adc.h"
-#include "project1_frames.h"
+#include "net_frames.h"
 
 #define LED_GREEN   GPIO_PIN_0
 #define LED_BLUE    GPIO_PIN_7
@@ -42,9 +42,9 @@ ADC_HandleTypeDef hadc1;
 
 volatile uint32_t tx_count;     /* frames queued for sending */
 volatile uint32_t tx_skipped;   /* sends skipped because all 3 mailboxes were busy */
-volatile p1_rx_stats_t rx;      /* frames received from the H723 */
+volatile net_rx_stats_t rx;      /* frames received from the H723 */
 volatile uint32_t rx_overruns;  /* FIFO0 overruns: frames lost because it was full */
-volatile p1_err_counts_t errs;  /* bus errors by type (see project1_frames.h) */
+volatile net_err_counts_t errs;  /* bus errors by type (see net_frames.h) */
 
 /* Own sensor readings: raw ADC averages and converted values */
 volatile struct {
@@ -66,7 +66,7 @@ volatile struct {
 static void SystemClock_Config(void);
 static void LED_Init(void);
 static void ADC1_Init(void);
-static void read_sensors(p1_payload_t *p);
+static void read_sensors(net_payload_t *p);
 static void CAN1_Init(void);
 static void CAN1_Filter(void);
 static void update_bus_status(void);
@@ -91,13 +91,13 @@ int main(void)
     }
 
     CAN_TxHeaderTypeDef tx = {
-        .StdId              = P1_ID_F429,
+        .StdId              = NET_ID_F429,
         .IDE                = CAN_ID_STD,
         .RTR                = CAN_RTR_DATA,
-        .DLC                = P1_DLC,
+        .DLC                = NET_DLC,
         .TransmitGlobalTime = DISABLE,
     };
-    p1_payload_t payload;
+    net_payload_t payload;
     uint8_t data[8];
     uint32_t mailbox;
 
@@ -116,7 +116,7 @@ int main(void)
         read_sensors(&payload);
         tx_count++;
         payload.count = tx_count;
-        p1_pack(data, &payload);
+        net_pack(data, &payload);
         if (HAL_CAN_AddTxMessage(&hcan1, &tx, data, &mailbox) != HAL_OK) {
             Error_Handler();
         }
@@ -175,10 +175,10 @@ static uint32_t adc_read(uint32_t channel)
 }
 
 /* Read VREFINT and the temperature sensor; fill in temperature and VDDA */
-static void read_sensors(p1_payload_t *p)
+static void read_sensors(net_payload_t *p)
 {
-    /* Factory calibration in system memory (see project1_frames.h) */
-    const p1_sensor_cal_t cal = {
+    /* Factory calibration in system memory (see net_frames.h) */
+    const net_sensor_cal_t cal = {
         .vrefint_cal = *VREFINT_CAL_ADDR,
         .ts_cal1     = *TEMPSENSOR_CAL1_ADDR,
         .ts_cal2     = *TEMPSENSOR_CAL2_ADDR,
@@ -189,7 +189,7 @@ static void read_sensors(p1_payload_t *p)
 
     uint32_t vref = adc_read(ADC_CHANNEL_VREFINT);
     uint32_t ts   = adc_read(ADC_CHANNEL_TEMPSENSOR);
-    p1_sensor_convert(&cal, vref, ts, &p->temp_c100, &p->vdda_mv);
+    net_sensor_convert(&cal, vref, ts, &p->temp_c100, &p->vdda_mv);
 
     local.vrefint_raw = vref;
     local.ts_raw      = ts;
@@ -231,15 +231,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
         Error_Handler();
     }
 
-    p1_payload_t p = p1_unpack(data);
-    int ok = h.IDE == CAN_ID_STD && h.StdId == P1_ID_H723 &&
-             h.RTR == CAN_RTR_DATA && h.DLC == P1_DLC &&
-             p1_payload_plausible(&p);
+    net_payload_t p = net_unpack(data);
+    int ok = h.IDE == CAN_ID_STD && h.StdId == NET_ID_H723 &&
+             h.RTR == CAN_RTR_DATA && h.DLC == NET_DLC &&
+             net_payload_plausible(&p);
     if (!ok) {
         rx.bad++;
         return;
     }
-    p1_rx_count(&rx, &p, HAL_GetTick());
+    net_rx_count(&rx, &p, HAL_GetTick());
     HAL_GPIO_TogglePin(GPIOB, LED_GREEN);
 }
 
@@ -293,15 +293,15 @@ static void CAN1_Init(void)
  * Mask bit 1 = must match, 0 = don't care. This mask compares all 11 ID
  * bits plus IDE and RTR, so only standard data frames with ID 0x200 pass.
  *
- * With -DP1_FILTER_ACCEPT_ALL (make FILTER=all) the mask is 0 instead, so
+ * With -DFILTER_ACCEPT_ALL (make FILTER=all) the mask is 0 instead, so
  * every frame passes: the control for step 7's filter test.
  */
 static void CAN1_Filter(void)
 {
-#ifdef P1_FILTER_ACCEPT_ALL
+#ifdef FILTER_ACCEPT_ALL
     const uint32_t id = 0, mask = 0;
 #else
-    const uint32_t id   = (P1_ID_H723 << 21);         /* IDE = 0, RTR = 0 */
+    const uint32_t id   = (NET_ID_H723 << 21);         /* IDE = 0, RTR = 0 */
     const uint32_t mask = (0x7FFU << 21) | CAN_ID_EXT | CAN_RTR_REMOTE;
 #endif
     CAN_FilterTypeDef f = {

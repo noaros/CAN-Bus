@@ -42,7 +42,7 @@ LDSCRIPT := STM32F429ZITx_FLASH.ld
 MCU     := -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
 
 ifeq ($(FILTER),all)
-DEFINES  += -DP1_FILTER_ACCEPT_ALL
+DEFINES  += -DFILTER_ACCEPT_ALL
 endif
 
 ifeq ($(DEBUG),1)

@@ -1,5 +1,5 @@
 /*
- * Project 1 frame definitions, shared by the F429 and H723 firmware so both
+ * Frame definitions shared by the F429 and H723 firmware, so both
  * boards agree on IDs and payload layout.
  *
  * Payload (8 bytes, little-endian):
@@ -7,30 +7,30 @@
  *   bytes 4-5  temperature of the sender's chip, in 0.01 degC (signed)
  *   bytes 6-7  sender's VDDA (analog supply voltage), in mV
  */
-#ifndef PROJECT1_FRAMES_H
-#define PROJECT1_FRAMES_H
+#ifndef NET_FRAMES_H
+#define NET_FRAMES_H
 
 #include <stdint.h>
 
-#define P1_ID_F429   0x100U   /* frames sent by the F429 */
-#define P1_ID_H723   0x200U   /* frames sent by the H723 */
-#define P1_DLC       8U
+#define NET_ID_F429   0x100U   /* frames sent by the F429 */
+#define NET_ID_H723   0x200U   /* frames sent by the H723 */
+#define NET_DLC       8U
 
 /* Plausible ranges for received sensor values. A frame outside them is
  * counted as bad: the sender's ADC or conversion is broken, or the layout
  * doesn't match. */
-#define P1_TEMP_MIN_C100   (-4000)   /* -40 degC */
-#define P1_TEMP_MAX_C100   12500     /* 125 degC */
-#define P1_VDDA_MIN_MV     2700U
-#define P1_VDDA_MAX_MV     3600U
+#define NET_TEMP_MIN_C100   (-4000)   /* -40 degC */
+#define NET_TEMP_MAX_C100   12500     /* 125 degC */
+#define NET_VDDA_MIN_MV     2700U
+#define NET_VDDA_MAX_MV     3600U
 
 typedef struct {
     uint32_t count;
     int16_t  temp_c100;
     uint16_t vdda_mv;
-} p1_payload_t;
+} net_payload_t;
 
-static inline void p1_pack(uint8_t data[8], const p1_payload_t *p)
+static inline void net_pack(uint8_t data[8], const net_payload_t *p)
 {
     uint16_t t = (uint16_t)p->temp_c100;
     data[0] = (uint8_t)(p->count);
@@ -43,9 +43,9 @@ static inline void p1_pack(uint8_t data[8], const p1_payload_t *p)
     data[7] = (uint8_t)(p->vdda_mv >> 8);
 }
 
-static inline p1_payload_t p1_unpack(const uint8_t data[8])
+static inline net_payload_t net_unpack(const uint8_t data[8])
 {
-    p1_payload_t p;
+    net_payload_t p;
     p.count     = (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
                   ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
     p.temp_c100 = (int16_t)((uint16_t)data[4] | ((uint16_t)data[5] << 8));
@@ -53,10 +53,10 @@ static inline p1_payload_t p1_unpack(const uint8_t data[8])
     return p;
 }
 
-static inline int p1_payload_plausible(const p1_payload_t *p)
+static inline int net_payload_plausible(const net_payload_t *p)
 {
-    return p->temp_c100 >= P1_TEMP_MIN_C100 && p->temp_c100 <= P1_TEMP_MAX_C100 &&
-           p->vdda_mv >= P1_VDDA_MIN_MV && p->vdda_mv <= P1_VDDA_MAX_MV;
+    return p->temp_c100 >= NET_TEMP_MIN_C100 && p->temp_c100 <= NET_TEMP_MAX_C100 &&
+           p->vdda_mv >= NET_VDDA_MIN_MV && p->vdda_mv <= NET_VDDA_MAX_MV;
 }
 
 /*
@@ -71,7 +71,7 @@ typedef struct {
     int32_t  ts_cal1_c;
     int32_t  ts_cal2_c;
     uint32_t cal_vdda_mv;   /* 3300 on both chips */
-} p1_sensor_cal_t;
+} net_sensor_cal_t;
 
 /*
  * Convert 12-bit ADC readings of VREFINT and the temperature sensor:
@@ -87,7 +87,7 @@ typedef struct {
  * H723 that macro scales the reading to 16 bits but this chip's calibration
  * values are 12-bit.
  */
-static inline void p1_sensor_convert(const p1_sensor_cal_t *c, uint32_t vrefint_raw,
+static inline void net_sensor_convert(const net_sensor_cal_t *c, uint32_t vrefint_raw,
                                      uint32_t ts_raw, int16_t *temp_c100, uint16_t *vdda_mv)
 {
     if (vrefint_raw == 0) {
@@ -120,10 +120,10 @@ typedef struct {
     uint32_t last_ok_tick;  /* HAL tick of the last good frame */
     int32_t  last_temp_c100; /* sensor values from the last good frame */
     uint32_t last_vdda_mv;
-} p1_rx_stats_t;
+} net_rx_stats_t;
 
 /* Count a received frame whose ID, DLC and sensor values are already known good */
-static inline void p1_rx_count(volatile p1_rx_stats_t *s, const p1_payload_t *p, uint32_t tick)
+static inline void net_rx_count(volatile net_rx_stats_t *s, const net_payload_t *p, uint32_t tick)
 {
     uint32_t count = p->count;
 
@@ -152,6 +152,6 @@ static inline void p1_rx_count(volatile p1_rx_stats_t *s, const p1_payload_t *p,
  */
 typedef struct {
     uint32_t lec[8];
-} p1_err_counts_t;
+} net_err_counts_t;
 
-#endif /* PROJECT1_FRAMES_H */
+#endif /* NET_FRAMES_H */

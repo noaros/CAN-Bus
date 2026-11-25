@@ -246,3 +246,31 @@ cd h723
 make
 make flash
 ```
+
+#### Step 5: H723 FDCAN in loopback
+
+The same test as step 3, on the H723's FDCAN. External loopback mode feeds every transmitted frame back to the controller's own receiver and still drives TX on PD1, so a failure here is in the H723 code, not the wiring or the F429.
+
+What it adds to `h723/Src/main.c`:
+
+| Part | Setting | Why |
+|---|---|---|
+| FDCAN1 init | `FDCAN_FRAME_CLASSIC`, NominalPrescaler 10, Seg1 13 tq, Seg2 2 tq, SJW 1 tq | Classic CAN at 500 kbps from the 80 MHz kernel clock (see Settings above). The data-phase settings only apply to CAN FD, so they're set to the minimum valid values |
+| Mode | `FDCAN_MODE_EXTERNAL_LOOPBACK` | The FDCAN equivalent of bxCAN's loopback: frames come back without a second node, and missing ACKs are ignored |
+| Message RAM | Sizes from the FDCAN message RAM table above | 1 standard filter, 8-slot Rx FIFO 0, 8-slot TX queue, 8 data bytes each |
+| Filter | Standard ID, mask mode, ID 0, mask 0 → Rx FIFO 0 | Mask 0 accepts every ID, as in step 3 |
+| Global filter | Reject non-matching standard, extended and remote frames | Unlike bxCAN, FDCAN accepts frames that match no filter into Rx FIFO 0 by default. Rejecting them means frames only get in through the filter above, so the test checks the filter too |
+| RX | Rx FIFO 0 new message interrupt, on interrupt line 0 (`FDCAN1_IT0_IRQHandler`) | The callback checks the ID, frame type, classic format, DLC and payload against the frame just sent |
+| Errors | Rx FIFO 0 message lost, protocol error, error warning, error passive and bus-off interrupts | Any of them stops the test with the red LED on |
+
+It sends the same frame as the F429: ID `0x123`, 8 bytes, a counter in bytes 0–3 and `CA FE BA BE` in bytes 4–7.
+
+| LED | Meaning |
+|---|---|
+| LD2 yellow | Toggles on every frame sent |
+| LD1 green | Toggles on every matching frame received |
+| LD3 red | On for good after a mismatch, CAN error or failed HAL call (`hfdcan1.ErrorCode` says which) |
+
+For checking over SWD, `tx_count` and `rx_ok_count` count frames sent and frames received that matched. Done when yellow and green both blink at 1 Hz, red stays off, and `rx_ok_count` keeps up with `tx_count`.
+
+Builds (16 KB flash, 1.8 KB RAM). Not yet verified on hardware.

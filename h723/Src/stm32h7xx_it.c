@@ -18,3 +18,12 @@ void SysTick_Handler(void)
 {
     HAL_IncTick();
 }
+
+/* FDCAN1 interrupt line 0 (all FDCAN1 interrupts by default)
+ * -> HAL_FDCAN_RxFifo0Callback() / HAL_FDCAN_ErrorStatusCallback() / ... */
+extern FDCAN_HandleTypeDef hfdcan1;
+
+void FDCAN1_IT0_IRQHandler(void)
+{
+    HAL_FDCAN_IRQHandler(&hfdcan1);
+}

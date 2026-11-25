@@ -10,3 +10,11 @@
 	path = lib/stm32f4xx-hal-driver
 	url = https://github.com/STMicroelectronics/stm32f4xx-hal-driver.git
 	shallow = true
+[submodule "lib/stm32h7xx-hal-driver"]
+	path = lib/stm32h7xx-hal-driver
+	url = https://github.com/STMicroelectronics/stm32h7xx-hal-driver.git
+	shallow = true
+[submodule "lib/cmsis-device-h7"]
+	path = lib/cmsis-device-h7
+	url = https://github.com/STMicroelectronics/cmsis-device-h7.git
+	shallow = true

@@ -184,7 +184,7 @@ make
 make flash
 ```
 
-`make flash` uses `STM32_Programmer_CLI` over the ST-LINK. Requires `arm-none-eabi-gcc`, GNU Make and STM32CubeProgrammer.
+`make flash` runs `tools/flash.sh`, which uses `STM32_Programmer_CLI` over the ST-LINK. With both Nucleos plugged in there are two ST-LINKs, so it flashes only the one whose target reports the board's device ID (`0x419` for the F429, `0x483` for the H723) and stops with an error if none does. Requires `arm-none-eabi-gcc`, GNU Make and STM32CubeProgrammer.
 
 #### Step 3: F429 bxCAN in loopback
 
@@ -211,3 +211,38 @@ Every 500 ms it sends ID `0x123` with 8 bytes: a counter in bytes 0–3 and `CA 
 Done when blue and green both blink at 1 Hz and red stays off. If blue blinks but green doesn't, the frame is sent but not received, so check the filter and RX interrupt first.
 
 Verified on hardware: flashed with `make flash`. Read over SWD while running, the TX counter rose by one every 500 ms, the green and blue LEDs toggled together with red off, CAN1's error register (ESR) read 0 (no errors, both error counters 0), and BTR read `0x401B0005` (loopback on, BRP 6, BS1 12 tq, BS2 2 tq, SJW 1 tq).
+
+#### Step 4: H723 HAL libraries and build setup
+
+The same as step 2, for the NUCLEO-H723ZG. Two more submodules, pinned like the F4 ones (`lib/cmsis_core` is shared):
+
+| Submodule | Version | Provides |
+|---|---|---|
+| `lib/stm32h7xx-hal-driver` | v1.11.7 | H7 HAL drivers, including FDCAN |
+| `lib/cmsis-device-h7` | v1.10.8 | H7 register definitions, startup code, `system_stm32h7xx.c` |
+
+`h723/` mirrors `f429/`: a Makefile, a linker script, a HAL config that enables only the modules in use, and a minimal `main.c` that sets the clocks and blinks LD1.
+
+Clocks, from the 8 MHz ST-LINK clock (HSE bypass) through PLL1 (/2 × 200 = 800 MHz VCO):
+
+| Output | Divider | Frequency | Used for |
+|---|---|---|---|
+| PLL1P | /2 | 400 MHz | System clock (CPU) |
+| PLL1Q | /10 | 80 MHz | FDCAN kernel clock, selected by the FDCANSEL mux. Sets the bit timing (see Settings above) |
+| AHB / APB1–4 | /2, then /2 | 200 / 100 MHz | Buses. FDCAN registers are on APB1 |
+
+H7 differences from the F429 setup:
+
+- **Power supply:** the H723 has no SMPS, so the core runs from the internal LDO (`HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY)`, and `USE_PWR_LDO_SUPPLY` for the startup code)
+- **Voltage scale 0:** allows up to 550 MHz, so 400 MHz has margin. Flash needs 2 wait states at 200 MHz AXI
+- **RAM:** data, heap and stack go in the 128 KB DTCM at `0x20000000`, the fastest RAM for the CPU. DMA can't reach DTCM, which doesn't matter here because FDCAN uses its own message RAM
+
+To check the clocks without a scope, `main.c` stores the frequencies the HAL computes from the RCC registers in `clk_sys_hz` and `clk_fdcan_hz`, readable over SWD. Done when LD1 blinks at 1 Hz, `clk_sys_hz` is 400000000 and `clk_fdcan_hz` is 80000000.
+
+Verified on hardware: flashed with `make flash`, and LD1 blinks at 1 Hz with LD3 off. Read over SWD: `clk_sys_hz` = 400000000, `clk_fdcan_hz` = 80000000, FDCANSEL = `01` (PLL1Q), and the HAL tick advanced 5102 ms over about 5.1 s of wall time, so the 400 MHz SysTick timing is right.
+
+```bash
+cd h723
+make
+make flash
+```

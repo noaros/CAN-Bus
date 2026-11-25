@@ -2,7 +2,8 @@
 #
 #   make           build build/f429.elf (debug)
 #   make DEBUG=0   optimized build
-#   make flash     flash over the ST-LINK (SWD) and reset
+#   make flash     flash over the ST-LINK (SWD) and reset; with several
+#                  ST-LINKs, picks the one whose target has DEVICE_ID
 #   make clean
 
 TARGET   := f429
@@ -17,7 +18,7 @@ PREFIX   := arm-none-eabi-
 CC       := $(PREFIX)gcc
 OBJCOPY  := $(PREFIX)objcopy
 SIZE     := $(PREFIX)size
-FLASHER  := STM32_Programmer_CLI
+DEVICE_ID := 0x419
 
 # Sources
 C_SRCS := \
@@ -79,7 +80,7 @@ $(BUILD)/%.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 flash: $(BUILD)/$(TARGET).elf
-	$(FLASHER) -c port=SWD -w $< -rst
+	../tools/flash.sh $(DEVICE_ID) $<
 
 clean:
 	rm -rf $(BUILD)

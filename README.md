@@ -197,7 +197,7 @@ What it adds to `f429/Src/main.c`:
 | CAN1 init | Prescaler 6, BS1 12 tq, BS2 2 tq, SJW 1 tq | 500 kbps from the 45 MHz APB1 clock (see Settings above) |
 | Mode | `CAN_MODE_LOOPBACK` | Frames come back without a second node, and missing ACKs are ignored. TX is still driven on PD1, so frames are visible on a scope |
 | Filter | Bank 0, 32-bit mask mode, mask 0 → FIFO0 | bxCAN discards all received frames until a filter is active. Mask 0 accepts every ID, so the filter can't be the cause if nothing arrives. Narrowed once the bus works |
-| RX | FIFO0 message pending interrupt | Project 1 uses interrupt-driven RX. The callback checks the ID, DLC and payload against the frame just sent |
+| RX | FIFO0 message pending interrupt | Project 1 uses interrupt-driven RX. The callback checks the ID, DLC (data length code: the frame's 4-bit field giving the number of data bytes, 0–8 in classic CAN) and payload against the frame just sent |
 | Errors | Error, bus-off and last-error-code interrupts | Any CAN error stops the test with the red LED on |
 
 Every 500 ms it sends ID `0x123` with 8 bytes: a counter in bytes 0–3 and `CA FE BA BE` in bytes 4–7.

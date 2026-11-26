@@ -2,10 +2,6 @@
 
 Built a 2-node CAN bus network in C between STM32F429 (bxCAN) and STM32H723 (FDCAN) boards at 500 kbps, with hardware acceptance filtering, interrupt-driven receive and periodic on-chip sensor frames. Traced intermittent bus errors to a 1.23% clock error on the H723 and fixed it with a fractional PLL trim, going from up to 32 errors per 5 minutes to 0 in 25 minutes.
 
-## Overview
-
-A 2-node CAN bus network in C between STM32F429 (bxCAN) and STM32H723 (FDCAN) Nucleo boards, sending periodic sensor frames at 500 kbps with hardware acceptance filtering and interrupt-driven RX.
-
 ## Wiring
 
 Transceivers: Waveshare SN65HVD230 (3.3 V). Pins are the same on both boards (PD0/PD1, AF9, on the CN9 connector).

@@ -1,8 +1,6 @@
 # CAN Bus
 
-## Resume Bullet
-
-- Built a 2-node CAN bus network in C between STM32F429 (bxCAN) and STM32H723 (FDCAN) boards at 500 kbps, with hardware acceptance filtering, interrupt-driven receive and periodic on-chip sensor frames. Traced intermittent bus errors to a 1.23% clock error on the H723 and fixed it with a fractional PLL trim, going from up to 32 errors per 5 minutes to 0 in 25 minutes.
+Built a 2-node CAN bus network in C between STM32F429 (bxCAN) and STM32H723 (FDCAN) boards at 500 kbps, with hardware acceptance filtering, interrupt-driven receive and periodic on-chip sensor frames. Traced intermittent bus errors to a 1.23% clock error on the H723 and fixed it with a fractional PLL trim, going from up to 32 errors per 5 minutes to 0 in 25 minutes.
 
 ## Overview
 
